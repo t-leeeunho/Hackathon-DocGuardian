@@ -1047,109 +1047,57 @@ On refresh, changed commit SHAs are detected and only modified documents are re-
 
 ## 10. Tech Stack
 
+The stack below is **locked** for the hackathon build (decided 2026-06-23). It is optimized for the Azure student plan: a single Postgres instance for all storage, local vector search to avoid managed-service provisioning, and only two LLM-backed agents.
+
 ### 10.1 Frontend
 
-Possible frontend stack:
-
-- React
-
-- TypeScript
-
-- Tailwind CSS
-
-- Next.js or Vite
-
-- shadcn/ui for reusable UI components
-
-- Monaco Editor or CodeMirror for diff and document editing views
+- **React + TypeScript**
+- **Vite** as the app shell (lightweight SPA; no SSR overhead)
+- **Tailwind CSS** for styling
+- **shadcn/ui** for reusable UI components
+- **Monaco Editor** for the diff and document editing views
 
 ### 10.2 Graph and Tree Visualization
 
-Possible graph visualization options:
-
-- React Flow for 2D relationship graphs
-
-- Cytoscape.js for graph analysis and visualization
-
-- Three.js or React Three Fiber for 3D document map
-
-- D3.js for custom graph layouts
-
-- Graphistry-style rendering concept for large relationship maps
-
-For hackathon demo purposes, a 2D graph may be easier and more reliable than a full 3D graph, while still showing strong product value.
+- **React Flow (2D)** is the locked choice for the relationship graph. It powers node health coloring, importance-based sizing, conflict edges, and the citation-driven node-blink highlighting (Section 8A.6.1).
+- 3D (React Three Fiber) is explicitly deferred as a post-hackathon nice-to-have.
 
 ### 10.3 Backend
 
-Possible backend stack:
-
-- Node.js with Express or Fastify
-
-- Python with FastAPI
-
-- .NET backend if aligning with Microsoft engineering stack
-
-- Background worker for document scanning and verification jobs
+- **Python + FastAPI** for the REST + WebSocket API
+- **Background worker** (FastAPI background tasks / a lightweight queue) for scanning, embedding, and verification jobs
 
 ### 10.4 Storage
 
-Possible storage options:
-
-- Azure Cosmos DB for document metadata and graph relationships
-
-- Azure Blob Storage for raw document snapshots
-
-- Azure SQL Database for audit logs and approval records
-
-- Azure AI Search for semantic search and retrieval
-
-- Git repository as the authoritative storage for versioned docs
+- **A single PostgreSQL instance** holds everything: document metadata, graph edges, audit logs, approvals, and provenance.
+- **pgvector** (the same Postgres) stores embeddings for similarity, duplicate, and conflict detection.
+- **Git** remains the authoritative source-of-truth for versioned docs (via sparse/shallow clones, Section 9.4).
+- Managed Azure storage (Cosmos, Blob, Azure SQL, Azure AI Search) is intentionally **not** used for the MVP to stay within student-plan limits.
 
 ### 10.5 AI and Retrieval
 
-Possible AI/RAG stack:
-
-- Azure OpenAI for reasoning, summarization, and authoring
-
-- Azure AI Search for hybrid search
-
-- Embeddings for document similarity and duplicate detection
-
-- RAG pipeline with source citation enforcement
-
-- Agent orchestration layer for routing between sub-agents
+- **Azure OpenAI** with exactly two deployments: one **chat** model (Curator + Guardian reasoning) and one **embeddings** model.
+- **pgvector** provides hybrid retrieval (keyword + vector) locally.
+- **RAG pipeline with source-citation enforcement** — every answer/edit carries supporting chunk IDs, commit SHAs, and a confidence score.
+- **Two LLM agents** (Curator + Guardian) coordinated by a thin code-level orchestrator; all other work is deterministic services (Section 8.3).
 
 ### 10.6 Verification Environment
 
-Possible verification approach:
+The verification sandbox is **built for real** (not mocked):
 
-- Isolated sandbox environment
-
-- Containerized execution
-
-- Repo checkout at specific commit
-
-- Script execution for build/test/doc commands
-
-- Validation result attached to confidence score
+- **Containerized execution** in an isolated environment
+- **Repo checkout at a specific commit** before running commands
+- **Script execution** for the relevant build/test/doc commands
+- **Validation result attached to the confidence score** (Section 6.5)
 
 ### 10.7 Governance and Security
 
-Possible governance components:
+For the MVP, authentication is **simulated** while governance mechanics are real:
 
-- Microsoft Entra ID authentication
-
-- Role-based access control
-
-- Document-level ACL enforcement
-
-- Approval workflow
-
-- Audit log
-
-- Provenance tracking
-
-- Rollback support
+- **Mocked auth**: a fake user + role map stands in for Microsoft Entra ID
+- **Role-based access control** and **document-level ACL enforcement** against that map
+- **Approval workflow**, **audit log**, **provenance tracking**, and **rollback** are all backed by Postgres
+- Real Entra ID integration is deferred to post-hackathon.
 
 ---
 
@@ -1163,7 +1111,7 @@ The user drops a new document into DocGuardian AI.
 
 ### Step 2: Agent Finds Related Documents
 
-The resolver agent identifies existing documents that overlap or conflict with the new content.
+The Curator agent (using the retrieval service) identifies existing documents that overlap or conflict with the new content.
 
 ### Step 3: Graph Highlights Relationships
 
@@ -1175,7 +1123,7 @@ The agent detects that two documents provide different instructions for the same
 
 ### Step 5: Proposed Merge
 
-The placement and authoring agents propose a merged canonical version.
+The Curator agent proposes a merged canonical version.
 
 ### Step 6: Evidence and Confidence
 
