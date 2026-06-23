@@ -1,0 +1,38 @@
+[
+  {
+    "repo": "microsoft/garnet",
+    "shortName": "garnet",
+    "url": "https://github.com/microsoft/garnet",
+    "branch": "main",
+    "sparsePaths": ["website/docs", "docs"],
+    "docGlobs": ["**/*.md", "**/*.mdx"],
+    "refreshIntervalMinutes": 120
+  },
+  {
+    "repo": "microsoft/playwright",
+    "shortName": "playwright",
+    "url": "https://github.com/microsoft/playwright",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/**/*.md", "docs/**/*.mdx"],
+    "refreshIntervalMinutes": 60
+  },
+  {
+    "repo": "microsoft/onnxruntime",
+    "shortName": "onnxruntime",
+    "url": "https://github.com/microsoft/onnxruntime",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/**/*.md"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "microsoft/vscode",
+    "shortName": "vscode",
+    "url": "https://github.com/microsoft/vscode",
+    "branch": "main",
+    "sparsePaths": ["build", "extensions", "src"],
+    "docGlobs": ["**/*.md"],
+    "refreshIntervalMinutes": 240
+  }
+]
