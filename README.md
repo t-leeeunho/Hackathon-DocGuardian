@@ -402,22 +402,518 @@ Documents the user cannot access should appear dimmed, blurred, or locked. This 
 
 ## 8. Agent Architecture
 
-DocGuardian AI uses one central orchestrator agent that routes user requests and system signals to specialized sub-agents.
+DocGuardian AI uses a **cost-conscious agent design** suited to the Azure student plan. Instead of many independent LLM agents (each consuming separate quota), it uses a thin orchestrator plus **two LLM-backed agents**, and pushes all deterministic work (search, deduplication, git metadata, ACL checks, sandbox execution) into plain **services/tools** that cost no model quota.
 
-### 8.1 Orchestrator Agent
+### 8.1 Orchestrator (Thin Router — No LLM)
 
-The orchestrator agent receives user requests, document events, and source-of-truth signals. It determines which specialized agent should handle each task and coordinates the final response or proposed action.
+The orchestrator is a **code-level router**, not an LLM agent. It receives user requests, document events, and source-of-truth signals, calls the deterministic services it needs (search, git metadata, ACL), and invokes an LLM agent only when reasoning or drafting is actually required. Keeping orchestration rule-based avoids spending Azure OpenAI quota on routing.
 
-### 8.2 Specialized Agents
+### 8.2 LLM Agents (Only Two)
 
-| Agent | Responsibility |
+| Agent | Merges | Responsibility |
+| --- | --- | --- |
+| **Curator Agent** | Intake + Resolver + Placement + Authoring | Understands the input, reasons over retrieved related docs, decides the action (create / update / merge / link / deprecate / flag), and drafts the proposed change with evidence and a confidence score |
+| **Guardian Agent** | Verification + Governance | Judges whether a proposed change is safe: reviews sandbox/verification results, checks for conflicts, and produces the approve/needs-review recommendation with ACL and provenance context |
+
+This is the **"a couple of agents with one tool layer"** model: two reasoning agents share a single MCP/tool layer.
+
+### 8.3 Deterministic Services (No LLM Cost)
+
+These do the heavy lifting without any model calls, which is what keeps the system affordable on a student plan:
+
+| Service / Tool | Responsibility (formerly an "agent") |
 | --- | --- |
-| Intake Agent | Normalizes natural language updates, uploaded files, PR signals, ticket updates, and structured events |
-| Resolver Agent | Finds existing, overlapping, related, or canonical documentation sources |
-| Placement Agent | Decides whether to create, update, merge, link, deprecate, or flag content |
-| Authoring Agent | Drafts documentation updates in the correct style and format |
-| Verification Agent | Checks output against code, configs, commands, tests, and source-of-truth signals |
-| Governance Agent | Enforces ACLs, approvals, audit logs, rollback, and write permissions |
+| Retrieval service | Similarity search, duplicate detection, related-doc lookup (vector index) |
+| Ingestion service | Sparse git clone, commit-metadata extraction, incremental refresh |
+| Verification sandbox | Runs build/test/doc commands in an isolated container, returns pass/fail |
+| Governance/ACL service | Enforces read/write permissions, writes provenance, handles rollback |
+
+The Curator and Guardian agents call these as **tools**, so the only true LLM invocations per request are: (1) one Curator call to reason + draft, and (2) one Guardian call to judge — roughly **two LLM calls per proposal**, which is well within student-plan limits. For the simplest chat questions, only a single Curator call (RAG answer) is made.
+
+---
+
+## 8A. System Architecture (End-to-End)
+
+This section describes the complete DocGuardian AI pipeline, tracing a single document from the moment it leaves a GitHub repository as clone metadata, through the backend services and AI embedding layer, and finally to the interactive frontend graph. It is intended to be detailed enough that any team member can implement their slice without ambiguity about inputs, outputs, and contracts between layers.
+
+### 8A.1 High-Level Layered View
+
+DocGuardian AI is organized into five horizontal layers. Data flows **upward** (ingestion → UI) and control/approvals flow **downward** (UI → governed writes). Each arrow in the diagram below carries a specific, versioned payload; the exact JSON shape of every payload is defined in the subsection for that layer.
+
+```text
++=============================================================================+
+|                          5 · FRONTEND LAYER                                 |
+|   [Graph View]   [Chat]   [Diff/Review Panel]   [Metrics + Provenance]      |
++=============================================================================+
+        ^                ^                 ^                    ^
+        |  GraphDTO      |  ChatAnswer     |  AgentProposal     |  MetricsDTO
+        |  (8A.6)        |  (8A.4)         |  (8A.4)            |  (8A.5)
+        v                v                 v                    v
++=============================================================================+
+|                       4 · BACKEND / API LAYER                               |
+|   [REST + WebSocket API]        [Background Job Queue]                      |
+|   [Metadata + Graph Store]      [Verification Sandbox]                      |
++=============================================================================+
+     ^  AgentProposal        ^  DocChunk[]            ^  SandboxResult
+     |  (8A.4)               |  (8A.3)                |  (8A.5)
+     v                       v                        v
++=============================================================================+
+|                      3 · AI / EMBEDDING LAYER                               |
+|   [Embedding Generator] -> [Vector Index] -> [Orchestrator -> Curator]      |
+|                                                   -> [Guardian Agent]       |
++=============================================================================+
+        ^  DocChunk (8A.3)                  ^  GraphEdge[] (8A.3)
+        |                                   |
+        v                                   v
++=============================================================================+
+|                       2 · PROCESSING LAYER                                  |
+|   [Normalizer] -> [Heading-Aware Chunker] -> [Link/Reference Extractor]     |
++=============================================================================+
+        ^  RawDocument / DocumentAdded / DocumentDeleted  (8A.2)
+        |
+        v
++=============================================================================+
+|                       1 · INGESTION LAYER                                   |
+|   [Sparse/Shallow git clone]  ->  [Commit Metadata Extractor]              |
+|   [Incremental Refresh Watcher]                                            |
+|   Sources: microsoft/{playwright, vscode, onnxruntime, garnet}            |
++=============================================================================+
+```
+
+**Reading the diagram:** a document is born at Layer 1 as a `RawDocument`, becomes a set of `DocChunk` + `GraphEdge` records at Layer 2, gains a vector embedding and (when acted on) an `AgentProposal` at Layer 3, is persisted and served by Layer 4, and is finally rendered for human review at Layer 5. The label on each arrow names the **data format** crossing that boundary and the subsection where its schema is defined.
+
+### 8A.2 Layer 1 — Data Ingestion (Starting From GitHub Clone Metadata)
+
+Ingestion is the entry point of the entire system. It deliberately starts from **git clone metadata rather than full repository contents** so the corpus stays small, cheap, and verifiable. (The clone commands themselves are detailed in Section 9.4; this section describes the architecture and the exact data that flows out of it.)
+
+**Inputs.** A configuration-driven repository list. This is the only thing an operator edits to onboard a new source:
+
+```json
+// repos.config.json — the single source of truth for ingestion
+[
+  {
+    "repo": "microsoft/playwright",
+    "url": "https://github.com/microsoft/playwright",
+    "branch": "main",
+    "docGlobs": ["docs/**/*.md"],
+    "refreshIntervalMinutes": 60
+  },
+  {
+    "repo": "microsoft/vscode",
+    "url": "https://github.com/microsoft/vscode",
+    "branch": "main",
+    "docGlobs": ["**/*.md"],
+    "refreshIntervalMinutes": 120
+  }
+]
+```
+
+**Stages (with the data produced at each step):**
+
+1. **Metadata-only clone.** Each repo is cloned with `--depth 1 --filter=blob:none --sparse`, producing a working tree with commit metadata but no file blobs. This is the cheapest possible "handshake" with GitHub and avoids API tokens and rate limits. At this point the only data that exists locally is the *commit graph and tree listing* — no document bytes yet.
+2. **Sparse folder selection.** `git sparse-checkout set <docGlobs>` triggers download of only the documentation blobs the system actually needs. The output is a filtered list of file paths plus their now-present blob contents.
+3. **Commit metadata extraction.** For every selected file, `git log -1 --format="%H|%an|%ae|%cI" -- <path>` yields the latest commit SHA, author name, author email, and ISO commit date. This tuple is the atomic unit of source-of-truth and feeds the verification stamp (Section 6.2) and node-health coloring (Section 7.9).
+4. **Raw document handoff.** Each file is emitted to the Processing Layer as exactly one `RawDocument` record.
+
+**Output data format — `RawDocument`** (the single record type leaving Layer 1):
+
+```jsonc
+{
+  "docId": "playwright/docs/src/intro.md",   // stable key: "<repo-short>/<path>"
+  "repo": "microsoft/playwright",            // full GitHub slug
+  "path": "docs/src/intro.md",               // path relative to repo root
+  "branch": "main",
+  "content": "# Getting Started\n\nnpm init playwright@latest ...", // raw UTF-8 markdown
+  "byteSize": 4821,                           // raw size in bytes
+  "encoding": "utf-8",
+  "commitSha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", // 40-char hex
+  "commitAuthor": "Jane Doe",
+  "commitEmail": "jane@example.com",
+  "commitDate": "2026-05-18T14:22:07Z",       // ISO 8601
+  "fetchedAt": "2026-06-23T10:00:00Z",        // when ingestion ran
+  "contentHash": "sha256:9f86d081884c7d659..." // sha256 of content, for idempotency
+}
+```
+
+**Field semantics that matter downstream:**
+
+- `docId` is the **primary key** used by every other layer — chunks, edges, embeddings, and graph nodes all reference it.
+- `commitSha` + `commitDate` are propagated, unchanged, into every chunk and every piece of evidence, so any UI node can be traced to an exact commit.
+- `contentHash` enables **idempotent ingestion**: if a refresh produces the same hash, no re-processing occurs.
+
+**Incremental refresh.** A watcher periodically runs `git fetch --depth 1 origin` + `git reset --hard origin/<branch>`. It then diffs commit SHAs per file and emits one of three event records:
+
+```jsonc
+// DocumentAdded  — a new doc path appeared
+{ "type": "DocumentAdded",   "docId": "vscode/build/new.md", "raw": { /* RawDocument */ } }
+
+// DocumentChanged — commitSha (and contentHash) changed
+{ "type": "DocumentChanged", "docId": "vscode/build.md",
+  "previousCommitSha": "f00d...", "raw": { /* RawDocument */ } }
+
+// DocumentDeleted — path no longer present in the tree
+{ "type": "DocumentDeleted", "docId": "vscode/old.md", "lastKnownCommitSha": "dead..." }
+```
+
+`DocumentChanged` and `DocumentAdded` are routed back through the Processing Layer; `DocumentDeleted` flags the corresponding graph node as stale/broken. This makes the continuous validation loop (Section 6.1) **event-driven** instead of a one-time import.
+
+### 8A.3 Layer 2 — Processing (Normalize, Chunk, Link)
+
+The Processing Layer turns one `RawDocument` into many embeddable, graph-aware units. It is pure and deterministic: the same `RawDocument` always yields the same chunks and edges, which keeps re-processing idempotent.
+
+1. **Normalizer.** Strips YAML front-matter, resolves relative image/link paths to absolute `docId`s, and converts markdown to clean text **while preserving** headings, code fences, and command blocks verbatim (commands are exactly what the Verification Agent later executes, so they must not be reformatted). It also records the character offset of every heading so chunk line ranges are exact.
+2. **Heading-aware chunker.** Splits each document along its heading hierarchy into overlapping chunks (target ~500–800 tokens, ~80-token overlap). Splitting on headings keeps each chunk semantically self-contained, and the overlap prevents losing context across a boundary. Each chunk inherits the parent's `docId`, `commitSha`, heading path, and exact line range so evidence can be cited back to specific lines.
+3. **Link/reference extractor.** Parses relative markdown links, "see also" references, and shared anchor/command names to produce candidate **graph edges**. At this stage only structural edges (`references`) are emitted; semantic edges (`duplicate-of`, `conflicts-with`) are added later by the AI layer once embeddings exist.
+
+**Output data format — `DocChunk`** (sent to the embedding layer; one document fans out into many):
+
+```jsonc
+{
+  "chunkId": "playwright/docs/src/intro.md#Installation#0", // docId#headingSlug#ordinal
+  "docId": "playwright/docs/src/intro.md",
+  "repo": "microsoft/playwright",
+  "headingPath": ["Getting Started", "Installation"],  // breadcrumb of headings
+  "ordinal": 0,                                          // chunk index within the doc
+  "text": "npm init playwright@latest\n\nThis installs ...", // clean, embeddable text
+  "tokenCount": 612,
+  "lineRange": [12, 41],         // 1-based [startLine, endLine] in the source file
+  "charRange": [180, 1422],      // byte offsets, for precise highlighting
+  "containsCommands": true,      // true if a fenced command block is present
+  "commitSha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "commitDate": "2026-05-18T14:22:07Z",
+  "contentHash": "sha256:1b4f0e9851971998e732..." // hash of text, for idempotent re-embed
+}
+```
+
+**Output data format — `GraphEdge`** (sent to the metadata/graph store):
+
+```jsonc
+{
+  "edgeId": "playwright/docs/src/intro.md->playwright/docs/src/ci.md:references",
+  "from": "playwright/docs/src/intro.md",  // source docId
+  "to": "playwright/docs/src/ci.md",       // target docId
+  "type": "references",                     // references | duplicate-of | conflicts-with | deprecated-by
+  "weight": 1.0,                            // structural=1.0; semantic edges carry similarity score
+  "evidence": {                             // why this edge exists
+    "reason": "explicit-markdown-link",
+    "anchorText": "see the CI guide",
+    "lineRange": [55, 55]
+  },
+  "createdBy": "link-extractor",            // link-extractor | resolver-agent
+  "commitSha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+}
+```
+
+The `from`/`to`/`type`/`weight` quartet is exactly what the frontend graph (Layer 5) consumes to draw nodes and color/stroke edges — e.g. `conflicts-with` renders as a red dashed line (Section 7.13).
+
+### 8A.4 Layer 3 — AI & Embeddings
+
+This layer gives the system its semantic understanding and reasoning. It consumes `DocChunk`s, produces vectors, and — when an action is requested — emits `AgentProposal`s.
+
+**Embedding generation.** Each `DocChunk.text` is embedded via Azure OpenAI embeddings (e.g. `text-embedding-3-large`, 3072 dimensions) into a fixed-length float vector. The vector plus its metadata is upserted into the vector index keyed by `chunkId`. Re-embedding is skipped when `contentHash` is unchanged.
+
+**Stored vector record format** (what lives in the index):
+
+```jsonc
+{
+  "chunkId": "playwright/docs/src/intro.md#Installation#0",
+  "docId": "playwright/docs/src/intro.md",
+  "repo": "microsoft/playwright",
+  "vector": [0.0123, -0.0481, 0.0067, "...3072 floats..."],
+  "model": "text-embedding-3-large",
+  "dim": 3072,
+  "text": "npm init playwright@latest ...",  // stored for re-ranking + citation
+  "headingPath": ["Getting Started", "Installation"],
+  "lineRange": [12, 41],
+  "commitSha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "acl": ["team:qa", "role:engineer"]          // permission tags enforced at query time
+}
+```
+
+**Vector index.** Azure AI Search (hybrid: BM25 keyword + vector) is the primary option; pgvector is a lighter local fallback for the hackathon. A query returns scored matches:
+
+```jsonc
+// SearchResult — returned by the index for any similarity query
+{
+  "query": "how do I run playwright tests in CI",
+  "matches": [
+    {
+      "chunkId": "playwright/docs/src/ci.md#GitHub-Actions#0",
+      "docId": "playwright/docs/src/ci.md",
+      "score": 0.8917,            // cosine similarity in [0,1]
+      "text": "npx playwright test ...",
+      "lineRange": [8, 30],
+      "commitSha": "9a8b7c..."
+    }
+  ]
+}
+```
+
+The index powers three jobs, each with a concrete rule:
+
+- **Similarity search** — top-k chunks (`score` desc) drive related-document retrieval and the chat RAG step.
+- **Duplicate detection** — any chunk pair from *different* `docId`s with `score >= 0.92` becomes a `duplicate-of` `GraphEdge` candidate (with `weight = score`).
+- **Conflict detection seed** — high text similarity (`score >= 0.85`) but a divergence in extracted commands/values flags a `conflicts-with` candidate for agent confirmation.
+
+**Agent orchestration (ties to Section 8).** The thin orchestrator consumes `SearchResult`s and makes at most two LLM calls: the **Curator Agent** reasons over the retrieved related docs, decides the action (create / update / merge / link / deprecate / flag), and drafts the change with the reasoning LLM; the **Guardian Agent** then reviews the sandbox/verification result and conflicts to produce the approve/needs-review judgment. Similarity search, duplicate detection, git metadata, ACL checks, and the sandbox run are deterministic services (Section 8.3) and consume no model quota.
+
+**Evidence enforcement.** Every LLM answer or proposed edit must carry its supporting chunk IDs, commit SHAs, and a confidence score; weak evidence (e.g. `confidence < 0.5` or no supporting chunk) forces the explicit "needs human review" path (Sections 6.3–6.4).
+
+**Output data format — `AgentProposal`** (the central artifact handed to the backend and rendered in the diff panel):
+
+```jsonc
+{
+  "proposalId": "prop_01H..",
+  "action": "merge",                  // create | update | merge | link | deprecate | flag
+  "targetDocId": "vscode/build.md",
+  "sourceDocIds": ["vscode/build.md", "vscode/contributing.md"],
+  "diff": {
+    "before": "Run `yarn` then `yarn watch`.",
+    "after":  "Run `npm ci` then `npm run watch`.",
+    "format": "unified",              // unified | side-by-side
+    "lineRange": [40, 44]
+  },
+  "draft": "## Building\n\nRun `npm ci` ...", // full proposed document body
+  "evidence": [
+    {
+      "chunkId": "vscode/build.md#Build#0",
+      "docId": "vscode/build.md",
+      "commitSha": "f00dcafe...",
+      "lineRange": [5, 22],
+      "quote": "npm ci installs exact versions",
+      "relevance": 0.88
+    }
+  ],
+  "confidence": 0.82,                  // [0,1]; < 0.5 => forced human review
+  "riskLevel": "medium",              // low | medium | high
+  "conflictsWith": ["vscode/contributing.md"],
+  "verification": {
+    "sandboxRun": true,
+    "passed": true,
+    "command": "npm ci && npm run watch",
+    "commitSha": "f00dcafe...",
+    "durationMs": 18342
+  },
+  "uncertainty": null,                // string explanation when confidence is low
+  "proposedBy": "curator-agent",     // curator drafts; guardian judges
+  "createdAt": "2026-06-23T10:05:11Z"
+}
+```
+
+**Output data format — `ChatAnswer`** (returned to the chat UI; always evidence-backed):
+
+```jsonc
+{
+  "answer": "Run `npx playwright test` from the repo root.",
+  "scope": "current-repo",            // mirrors the UI scope toggle (Section 7.7)
+  "citations": [
+    { "docId": "playwright/docs/src/ci.md", "lineRange": [8, 12],
+      "commitSha": "9a8b7c...", "relevance": 0.91 },   // drives node glow intensity (8A.6.1)
+    { "docId": "playwright/docs/src/intro.md", "lineRange": [12, 18],
+      "commitSha": "a1b2c3...", "relevance": 0.64 }
+  ],
+  "confidence": 0.91,
+  "needsHumanReview": false
+}
+```
+
+### 8A.5 Layer 4 — Backend & API
+
+The backend is the coordination and persistence hub between AI and UI.
+
+- **API service** (FastAPI or Node/Fastify) exposes REST for CRUD/search and a WebSocket channel for live graph and proposal updates.
+- **Background worker / job queue** runs the heavy, async work: scanning, chunking, embedding, and verification jobs triggered by ingestion events. Keeping these off the request path keeps the UI responsive.
+- **Metadata + graph store** holds documents, chunks-to-doc mappings, graph edges, node health, ownership/ACLs, approvals, and provenance. Options: Azure Cosmos DB (document + graph) with Azure SQL for audit/approval records.
+- **Verification sandbox** is an isolated container that checks out the repo at a specific commit and runs the relevant build/test/doc command, returning pass/fail to back the confidence score (Section 6.5).
+- **Governance enforcement** applies ACLs at retrieval, answer, and write stages, and runs the propose to diff to approve to apply to provenance flow before any authoritative write (Sections 6.8, 6.10, 6.12).
+
+**Representative API surface:**
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/ingest/refresh` | Trigger incremental refresh for one or all repos |
+| `GET` | `/graph` | Return nodes + edges + health for the graph view |
+| `GET` | `/search?q=` | Hybrid semantic search over chunks |
+| `POST` | `/documents` | Drop-off intake (upload/paste/NL update) |
+| `GET` | `/proposals/:id` | Fetch an `AgentProposal` with evidence + diff |
+| `POST` | `/proposals/:id/approve` | Apply approved change + record provenance |
+| `GET` | `/metrics` | Dashboard counters (stale fixed, conflicts resolved, etc.) |
+| `WS` | `/stream` | Live proposal/graph/health updates |
+
+**Persisted data format — `DocumentRecord`** (the canonical row in the metadata/graph store):
+
+```jsonc
+{
+  "docId": "vscode/build.md",
+  "repo": "microsoft/vscode",
+  "path": "build.md",
+  "title": "Building VS Code",
+  "owner": "team:platform",
+  "acl": ["team:platform", "role:engineer"],
+  "health": "yellow",                 // green | yellow | red | gray (Section 7.9)
+  "importance": 0.74,                 // 0..1, drives node size (Section 7.10)
+  "lastVerifiedSha": "f00dcafe...",   // backs the verification stamp (Section 6.2)
+  "lastVerifiedAt": "2026-06-20T09:00:00Z",
+  "currentCommitSha": "f1e2d3c4...",  // if != lastVerifiedSha => candidate stale
+  "chunkIds": ["vscode/build.md#Build#0", "vscode/build.md#Test#1"],
+  "createdAt": "2026-06-01T00:00:00Z",
+  "updatedAt": "2026-06-23T10:06:00Z"
+}
+```
+
+**Persisted data format — `ProvenanceEntry`** (append-only audit row, written on every governed change):
+
+```jsonc
+{
+  "entryId": "prov_01H..",
+  "docId": "vscode/build.md",
+  "proposalId": "prop_01H..",
+  "action": "merge",
+  "approvedBy": "user:alice@example.com",
+  "approvedAt": "2026-06-23T10:07:30Z",
+  "previousVersionRef": "blob:sha256:aaa...", // enables one-click rollback (Section 6.10)
+  "newVersionRef": "blob:sha256:bbb...",
+  "evidenceSnapshot": [ { "chunkId": "vscode/build.md#Build#0", "commitSha": "f00dcafe..." } ],
+  "confidence": 0.82,
+  "reason": "Unified yarn/npm build instructions to npm"
+}
+```
+
+**Verification I/O — `SandboxRequest` / `SandboxResult`** (between backend and the isolated container):
+
+```jsonc
+// SandboxRequest (backend -> sandbox)
+{ "repo": "microsoft/vscode", "commitSha": "f00dcafe...",
+  "command": "npm ci && npm run watch", "timeoutMs": 60000 }
+
+// SandboxResult (sandbox -> backend)
+{ "passed": true, "exitCode": 0, "durationMs": 18342,
+  "stdoutTail": "...watch build finished", "stderrTail": "" }
+```
+
+### 8A.6 Layer 5 — Frontend
+
+The frontend renders the governed knowledge and drives human-in-the-loop actions. It is a read/act client over the backend API and WebSocket stream. The frontend is a **first-class layer**, not an afterthought: it owns perceived performance (lazy/chunked rendering), the human-in-the-loop trust surfaces (diff, evidence, confidence, provenance), and the "show your work" visuals that make the AI feel grounded rather than magical.
+
+- **Document graph view** (React Flow for 2D MVP; React Three Fiber for optional 3D) renders nodes sized by importance (Section 7.10) and colored by health (Section 7.9), with conflict edges as red dashed lines (Section 7.13) and permission fog for inaccessible nodes (Section 7.14). Chunked/lazy rendering keeps large corpora responsive (Section 7.3).
+- **Drop-off area** posts uploads/pastes/NL updates to `/documents`, kicking off the intake to placement flow.
+- **Evidence-backed chat** calls `/search` + the agent layer, returning answers with source citations, confidence, and a scope toggle (Sections 7.6–7.7).
+- **Diff / review side panel** renders an `AgentProposal` (before/after diff, evidence, confidence, risk) and posts approve/reject (Section 7.11).
+- **Provenance + metrics surfaces** read `/proposals` and `/metrics` to show ownership, last-verified stamps, approval history, rollback, and impact counters (Sections 7.12, 6.11).
+
+#### 8A.6.1 "Show Your Work" — Highlighting the Nodes the AI Used
+
+When a user asks the AI something, the answer is never a black box: every `ChatAnswer.citations[]` entry (Section 8A.4) maps to a real `docId` that already exists as a node in the graph. The moment an answer streams back, the frontend takes those cited `docId`s and tells the graph to **subtly blink/glow the exact nodes the AI drew its answer from** (this is the realization of Section 7.2, *Referenced Document Highlighting*). This makes the data provenance instantly visible — the user literally sees which documents the AI "touched."
+
+**Data that drives the effect.** The chat response already carries everything needed; the frontend derives a lightweight highlight instruction from it:
+
+```jsonc
+// GraphHighlightEvent — derived on the client from ChatAnswer.citations (or pushed over WS)
+{
+  "reason": "chat-evidence",          // chat-evidence | proposal-evidence | hover-references
+  "nodeIds": ["playwright/docs/src/ci.md", "playwright/docs/src/intro.md"],
+  "edgeIds": ["playwright/docs/src/intro.md->playwright/docs/src/ci.md:references"],
+  "intensity": 0.91,                  // taken from citation relevance/confidence -> glow strength
+  "ttlMs": 4000                       // auto-fade after this duration
+}
+```
+
+**Visual treatment (subtle and appealing, not distracting):**
+
+- A soft **pulsing glow / halo** on each cited node — opacity eased between ~0.55 and ~1.0 on a slow ~1.4s sine loop, so it "breathes" rather than flashes.
+- The glow color is **derived from the node's existing health color** (green/yellow/red) so highlighting never overrides the health signal — it just brightens and adds a halo.
+- Cited nodes get a brief one-time **scale "pop"** (1.0 → ~1.08 → 1.0) on first appearance to draw the eye, then settle into the gentle pulse.
+- Connecting `references` edges between cited nodes animate a **flowing dash** to imply the AI traversed those links.
+- Intensity scales with citation relevance (`intensity` field): the most-relevant source pulses brightest, weaker supporting sources glow faintly.
+- Everything **auto-fades after `ttlMs`**, and respects `prefers-reduced-motion` (falls back to a static halo, no pulsing) for accessibility.
+
+**Interaction loop.** Hovering a citation chip in the chat re-triggers the highlight for just that one node; clicking a citation chip pans/zooms the graph to that node and opens its provenance panel (Section 7.12). Conversely, selecting a node highlights the chat citations that reference it. The same `GraphHighlightEvent` mechanism (with `reason: "proposal-evidence"`) lights up the nodes behind an `AgentProposal` while it sits in the diff panel, so the user sees the evidence base of a proposed change before approving it.
+
+**Consumed data format — `GraphDTO`** (the exact payload `/graph` returns to the graph view):
+
+```jsonc
+{
+  "nodes": [
+    {
+      "id": "vscode/build.md",
+      "label": "Building VS Code",
+      "health": "yellow",        // -> node color (Section 7.9)
+      "size": 0.74,              // -> node radius (Section 7.10)
+      "accessible": true,        // false -> render permission fog (Section 7.14)
+      "repo": "microsoft/vscode"
+    }
+  ],
+  "edges": [
+    {
+      "from": "vscode/build.md",
+      "to": "vscode/contributing.md",
+      "type": "conflicts-with",  // -> red dashed line (Section 7.13)
+      "weight": 0.87
+    }
+  ]
+}
+```
+
+**Consumed data format — `MetricsDTO`** (the exact payload `/metrics` returns to the dashboard):
+
+```jsonc
+{
+  "staleDetected": 42,
+  "staleFixed": 30,
+  "duplicatesRemoved": 11,
+  "conflictsDetected": 9,
+  "conflictsResolved": 6,
+  "brokenLinksResolved": 4,
+  "docsWithVerificationStamp": 0.78,   // fraction in [0,1]
+  "avgTimeToUpdateHours": 3.2,
+  "asOf": "2026-06-23T10:08:00Z"
+}
+```
+
+### 8A.7 End-to-End Sequence (Drop-Off to Approved Write)
+
+The following trace shows the exact data format crossing each hop, from a user pasting a doc to an approved, provenance-logged write:
+
+```text
+USER (Frontend)        BACKEND API      ORCHESTRATOR+CURATOR/GUARDIAN  VECTOR INDEX  SANDBOX   STORE
+      |                     |                       |                    |            |           |
+      |  POST /documents    |                       |                    |            |           |
+      |  { RawDocument }    |                       |                    |            |           |
+      |-------------------->|                       |                    |            |           |
+      |                     |  Intake event         |                    |            |           |
+      |                     |---------------------->|                    |            |           |
+      |                     |                       |  similarity +      |            |           |
+      |                     |                       |  duplicate query   |            |           |
+      |                     |                       |------------------->|            |           |
+      |                     |                       |   SearchResult[]   |            |           |
+      |                     |                       |<-------------------|            |           |
+      |                     |                       | Curator: reason +  |            |           |
+      |                     |                       | decide + draft     |            |           |
+      |                     |                       |  SandboxRequest    |            |           |
+      |                     |                       |--------------------------------->|          |
+      |                     |                       |          SandboxResult           |          |
+      |                     |                       |<---------------------------------|          |
+      |                     |   AgentProposal       |                    |            |           |
+      |                     |   (diff+evidence+conf)|                    |            |           |
+      |                     |<----------------------|                    |            |           |
+      |   WS: AgentProposal |                       |                    |            |           |
+      |<--------------------|                       |                    |            |           |
+      |  (review in Diff panel)                     |                    |            |           |
+      | POST /proposals/:id/approve                 |                    |            |           |
+      |-------------------->|                       |                    |            |           |
+      |                     |  apply change + write DocumentRecord + ProvenanceEntry  |           |
+      |                     |-------------------------------------------------------->|           |
+      |  WS: GraphDTO +     |                       |                    |            |           |
+      |      MetricsDTO     |                       |                    |            |           |
+      |<--------------------|                       |                    |            |           |
+```
+
+### 8A.8 Cross-Cutting Concerns
+
+- **Provenance everywhere.** Every chunk, edge, and proposal carries its originating `commitSha`, so any node in the graph can be traced back to an exact source line at an exact commit.
+- **Idempotent ingestion.** Re-running ingestion on an unchanged commit is a no-op (SHA comparison), so refreshes are safe and cheap.
+- **Permission propagation.** ACLs attach at the document level in the store and are enforced uniformly at retrieval, answer, and write — the frontend never receives content the user cannot access.
+- **Configuration-driven sources.** Adding a repository is a config change (URL + folder globs), requiring no architectural changes across any layer.
 
 ---
 
