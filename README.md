@@ -425,6 +425,27 @@ The orchestrator agent receives user requests, document events, and source-of-tr
 
 DocGuardian AI can use multiple data sources depending on permissions and integration availability.
 
+### 9.0 Hackathon Corpus (Repositories Used)
+
+For the hackathon, DocGuardian AI ingests documentation and source-of-truth signals from four real, large, doc-rich open-source repositories. These provide naturally occurring stale, duplicate, and conflicting documentation (especially around build, test, and setup workflows), which makes them ideal for demonstrating detection and governance.
+
+| Repository | Source | Why It Is Useful |
+| --- | --- | --- |
+| Playwright | `microsoft/playwright` | Rich end-to-end testing docs, multi-language guides, frequent setup/test instructions that drift over time |
+| VS Code | `microsoft/vscode` | Very large codebase with extensive contributor, build, and architecture docs spread across many folders |
+| ONNX Runtime | `microsoft/onnxruntime` | AI model inference runtime with dense build, platform, and usage documentation prone to version-specific staleness |
+| Garnet | `microsoft/garnet` | Microsoft cache-store project with focused operational, benchmarking, and getting-started docs |
+
+For each repository, DocGuardian AI treats the following as ingestible signals:
+
+- Markdown documentation (`**/*.md`)
+
+- Commit history and pull requests as freshness and provenance signals
+
+- Configuration and build scripts referenced by the docs for verification
+
+To keep the demo reliable, ingestion can be scoped to documentation folders rather than full repository clones.
+
 ### 9.1 Documentation Sources
 
 - Company documentation
@@ -476,6 +497,55 @@ DocGuardian AI can use multiple data sources depending on permissions and integr
 - Team announcements
 
 These sources can help determine whether documentation still matches current engineering reality.
+
+### 9.4 Data Retrieval and Ingestion Mechanism
+
+DocGuardian AI retrieves documentation directly from the source repositories using **sparse, shallow git clones** rather than the GitHub API. This avoids API tokens and rate limits, scopes each clone to the relevant documentation folders, and provides commit metadata for free.
+
+#### How Retrieval Works
+
+For each repository, the ingestion step performs a metadata-only clone, selects only the documentation folders, and then downloads just those files:
+
+```powershell
+# 1. Clone metadata only — no file contents, no deep history
+git clone --depth 1 --filter=blob:none --sparse https://github.com/microsoft/playwright data/playwright
+
+# 2. Select only the documentation folders
+cd data/playwright
+git sparse-checkout set docs
+
+# 3. Git downloads only the blobs inside the selected folders
+```
+
+| Flag | Effect | Why It Matters |
+| --- | --- | --- |
+| `--depth 1` | Only the latest commit, no history | Skips the large histories of repos like VS Code and ONNX Runtime |
+| `--filter=blob:none` | Defers downloading file contents | Only blobs that are checked out are fetched |
+| `--sparse` | Starts with an empty working tree | Nothing is downloaded until folders are selected |
+| `git sparse-checkout set <dir>` | Downloads only the chosen folders | Avoids cloning gigabyte-scale repositories |
+
+#### Commit Metadata as Source-of-Truth Signals
+
+Even with a shallow clone, each retrieved file retains git metadata that powers freshness and provenance features:
+
+```powershell
+# Latest commit SHA and date that touched a given document
+git log -1 --format="%H %cs" -- docs/intro.md
+```
+
+This commit SHA and date directly support the verification stamp in Section 6.2 (`Last verified against commit <sha> on <date>`) and the color-coded node health described in Section 7.9.
+
+#### Incremental Refresh (Upcoming Data)
+
+The same mechanism keeps the corpus current without re-cloning. Refreshing pulls only new or changed documents:
+
+```powershell
+cd data/vscode
+git fetch --depth 1 origin
+git reset --hard origin/main
+```
+
+On refresh, changed commit SHAs are detected and only modified documents are re-chunked, re-embedded, and re-verified. Deleted files are flagged as stale or broken, and newly added files are routed through the intake flow. This makes the continuous validation loop in Section 6.1 event-driven rather than a one-time import. The repository list is configuration-driven, so additional sources can be added without architectural changes.
 
 ---
 
