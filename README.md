@@ -1,16 +1,3 @@
-<style>
-a {
-    text-decoration: none;
-    color: #464feb;
-}
-tr th, tr td {
-    border: 1px solid #e6e6e6;
-}
-tr th {
-    background-color: #f5f5f5;
-}
-</style>
-
 # DocGuardian AI
 
 ## AI-Powered Documentation Governance, Validation, and Knowledge Navigation Platform
