@@ -79,129 +79,129 @@ Working assumptions:
 
 ### Phase 0 — Foundation participation
 
-- [ ] **UNBLOCKED:** Confirm the locked frontend stack is scaffolded: React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (`@xyflow/react`) + Monaco Editor, with 2D graph as the MVP and 3D explicitly deferred.
-- [ ] **UNBLOCKED:** Create/review frontend TypeScript interfaces for implemented README §8B contracts: `HealthResponse`, `SearchResponse`, `TreeDTO`, `GraphDTO`, `DocumentResponse`, `DocumentIntakeResponse`, `ChatAnswer`, and today's streamlined `AgentProposal`; verify frontend field names mirror real camelCase API responses.
-- [ ] **UNBLOCKED:** Create `frontend/src/lib/types.ts` if needed; it does not exist yet, so base it on README §8B / implementation-status §4 instead of assuming a frozen pre-existing file.
-- [ ] Create the app shell inside `frontend/src/**`: graph workspace, left/source area if needed, right review/provenance panel area, bottom or side chat, and metrics summary region.
-- [ ] Set up Tailwind and shadcn/ui usage patterns for cards, buttons, badges, panels, tabs, scroll areas, dialogs, toasts, and form controls.
-- [ ] **UNBLOCKED:** Build `lib/api.ts` against the implemented REST API from README §8B: `GET /health`, `GET /search`, `POST /documents`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`, `POST /chat`, and `POST /propose`.
+- [x] **UNBLOCKED:** Confirm the locked frontend stack is scaffolded: React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (`@xyflow/react`) + Monaco Editor, with 2D graph as the MVP and 3D explicitly deferred.
+- [x] **UNBLOCKED:** Create/review frontend TypeScript interfaces for implemented README §8B contracts: `HealthResponse`, `SearchResponse`, `TreeDTO`, `GraphDTO`, `DocumentResponse`, `DocumentIntakeResponse`, `ChatAnswer`, and today's streamlined `AgentProposal`; verify frontend field names mirror real camelCase API responses.
+- [x] **UNBLOCKED:** Create `frontend/src/lib/types.ts` if needed; it does not exist yet, so base it on README §8B / implementation-status §4 instead of assuming a frozen pre-existing file.
+- [x] Create the app shell inside `frontend/src/**`: graph workspace, left/source area if needed, right review/provenance panel area, bottom or side chat, and metrics summary region.
+- [x] Set up Tailwind and shadcn/ui usage patterns for cards, buttons, badges, panels, tabs, scroll areas, dialogs, toasts, and form controls.
+- [x] **UNBLOCKED:** Build `lib/api.ts` against the implemented REST API from README §8B: `GET /health`, `GET /search`, `POST /documents`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`, `POST /chat`, and `POST /propose`.
 - [ ] **BLOCKED on P4 backend:** Build real `lib/ws.ts` for `WS /stream`; until then, deterministic local event replay is fallback/demo-only.
-- [ ] Add `lib/fixtures.ts` with representative fallback `GraphDTO`, `ChatAnswer`, today's `AgentProposal`, and placeholder `MetricsDTO` data; clearly label metrics/approval/WS fixtures as not backed by current endpoints.
-- [ ] **PARTIALLY UNBLOCKED:** Render a real `/graph` graph. Use fixtures only to demonstrate yellow/red/gray health and `conflicts-with` edges until backend health scoring, ACLs, duplicate/conflict edges, and non-green health values exist.
-- [ ] Prove **M1** visually: real graph/tree/search/chat/propose where available, citation chips, proposal review panel, and clearly marked placeholder provenance/metrics surfaces for pending backend endpoints.
+- [x] Add `lib/fixtures.ts` with representative fallback `GraphDTO`, `ChatAnswer`, today's `AgentProposal`, and placeholder `MetricsDTO` data; clearly label metrics/approval/WS fixtures as not backed by current endpoints.
+- [x] **PARTIALLY UNBLOCKED:** Render a real `/graph` graph. Use fixtures only to demonstrate yellow/red/gray health and `conflicts-with` edges until backend health scoring, ACLs, duplicate/conflict edges, and non-green health values exist.
+- [x] Prove **M1** visually: real graph/tree/search/chat/propose where available, citation chips, proposal review panel, and clearly marked placeholder provenance/metrics surfaces for pending backend endpoints.
 
 ### Core Build
 
 #### Graph View
 
-- [ ] Implement React Flow graph rendering from `GraphDTO.nodes[]` and `GraphDTO.edges[]` with stable node IDs equal to document `docId`/graph `id`.
-- [ ] Map node health exactly when real values arrive: green = fresh/verified, yellow = aging/needs review, red = stale/conflicting/broken, gray/locked = inaccessible or access-restricted. **Current `/graph` returns placeholder green health, so live health coloring will look uniform until P4 health scoring lands.**
-- [ ] Size nodes from `size` in the implemented `/graph` payload. Treat current values as placeholders (~0.5) until P4 adds meaningful importance/health scoring.
-- [ ] Render `conflicts-with` edges as red dashed lines with clear contrast and no ambiguity with ordinary `references` edges when such edges are emitted or shown in fallback fixtures.
-- [ ] Render `duplicate-of`, `deprecated-by`, and `references` edges with visually distinct but calmer treatments so conflict edges remain the strongest warning signal; semantic duplicate/conflict edges are pending backend work.
-- [ ] Apply permission fog for `accessible:false`: dim/blur/lock the node, hide restricted details, and prevent provenance content from leaking beyond allowed metadata. **Current `/graph` returns placeholder `accessible:true` until ACL work lands.**
-- [ ] Add selection behavior: selecting a node opens the provenance panel and highlights related chat citations when present.
-- [ ] Add pan/zoom controls, fit-to-view, selected-cluster zoom, and a reset-view control appropriate for live demo use.
-- [ ] Implement chunked/lazy rendering: show an overview first, render details only for selected/nearby clusters, and avoid loading full document details until a node is selected.
-- [ ] Handle graph edge cases: empty graph, disconnected graph, inaccessible-only results, missing health, unknown edge type, and graph refresh while a node is selected.
+- [x] Implement React Flow graph rendering from `GraphDTO.nodes[]` and `GraphDTO.edges[]` with stable node IDs equal to document `docId`/graph `id`.
+- [x] Map node health exactly when real values arrive: green = fresh/verified, yellow = aging/needs review, red = stale/conflicting/broken, gray/locked = inaccessible or access-restricted. **Current `/graph` returns placeholder green health, so live health coloring will look uniform until P4 health scoring lands.**
+- [x] Size nodes from `size` in the implemented `/graph` payload. Treat current values as placeholders (~0.5) until P4 adds meaningful importance/health scoring.
+- [x] Render `conflicts-with` edges as red dashed lines with clear contrast and no ambiguity with ordinary `references` edges when such edges are emitted or shown in fallback fixtures.
+- [x] Render `duplicate-of`, `deprecated-by`, and `references` edges with visually distinct but calmer treatments so conflict edges remain the strongest warning signal; semantic duplicate/conflict edges are pending backend work.
+- [x] Apply permission fog for `accessible:false`: dim/blur/lock the node, hide restricted details, and prevent provenance content from leaking beyond allowed metadata. **Current `/graph` returns placeholder `accessible:true` until ACL work lands.**
+- [x] Add selection behavior: selecting a node opens the provenance panel and highlights related chat citations when present.
+- [x] Add pan/zoom controls, fit-to-view, selected-cluster zoom, and a reset-view control appropriate for live demo use.
+- [x] Implement chunked/lazy rendering: show an overview first, render details only for selected/nearby clusters, and avoid loading full document details until a node is selected.
+- [x] Handle graph edge cases: empty graph, disconnected graph, inaccessible-only results, missing health, unknown edge type, and graph refresh while a node is selected.
 
 #### Show-Your-Work Highlight
 
-- [ ] Convert every `ChatAnswer.citations[]` entry into a `GraphHighlightEvent` using normalized citation `docId`/`doc_id` as `nodeIds[]`, citation `relevance` as intensity, and a default `ttlMs` around 4000 ms unless the event supplies one.
-- [ ] Resolve `edgeIds[]` for cited nodes by finding `references` edges between cited documents already present in the current `GraphDTO`.
-- [ ] Pulse/glow cited nodes with a subtle ~1.4s sine breathing loop: opacity roughly 0.55 → 1.0 → 0.55, not a distracting blink.
-- [ ] Add a one-time scale pop for newly cited nodes: 1.0 → approximately 1.08 → 1.0, then settle into the soft pulse.
-- [ ] Derive glow color from each node's existing health color; never replace or obscure green/yellow/red/gray health semantics.
-- [ ] Animate cited `references` edges with a flowing dash to imply traversal; do not animate `conflicts-with` edges in a way that weakens their red warning style.
-- [ ] Scale highlight brightness by citation relevance so the primary source is visibly stronger than lower-relevance supporting sources.
-- [ ] Auto-fade highlight state after `ttlMs`; clear timers on unmount, graph refresh, or superseding highlight events.
-- [ ] Respect `prefers-reduced-motion`: use a static halo or outline fallback with no pulsing, no scale pop, and no flowing dash animation.
-- [ ] Support highlight reasons: `chat-evidence`, `proposal-evidence`, and `hover-references`, with hover highlights scoped to a single node and short TTL.
+- [x] Convert every `ChatAnswer.citations[]` entry into a `GraphHighlightEvent` using normalized citation `docId`/`doc_id` as `nodeIds[]`, citation `relevance` as intensity, and a default `ttlMs` around 4000 ms unless the event supplies one.
+- [x] Resolve `edgeIds[]` for cited nodes by finding `references` edges between cited documents already present in the current `GraphDTO`.
+- [x] Pulse/glow cited nodes with a subtle ~1.4s sine breathing loop: opacity roughly 0.55 → 1.0 → 0.55, not a distracting blink.
+- [x] Add a one-time scale pop for newly cited nodes: 1.0 → approximately 1.08 → 1.0, then settle into the soft pulse.
+- [x] Derive glow color from each node's existing health color; never replace or obscure green/yellow/red/gray health semantics.
+- [x] Animate cited `references` edges with a flowing dash to imply traversal; do not animate `conflicts-with` edges in a way that weakens their red warning style.
+- [x] Scale highlight brightness by citation relevance so the primary source is visibly stronger than lower-relevance supporting sources.
+- [x] Auto-fade highlight state after `ttlMs`; clear timers on unmount, graph refresh, or superseding highlight events.
+- [x] Respect `prefers-reduced-motion`: use a static halo or outline fallback with no pulsing, no scale pop, and no flowing dash animation.
+- [x] Support highlight reasons: `chat-evidence`, `proposal-evidence`, and `hover-references`, with hover highlights scoped to a single node and short TTL.
 
 #### Chat + Scope Toggle
 
-- [ ] Build an evidence-backed chat panel for questions like running tests, locating architecture docs, summarizing onboarding, and checking document accuracy.
-- [ ] Implement the scope toggle options from README §7.7: current repository only, current team docs only, accessible company docs, selected document cluster, summary-only mode, and source-required mode.
-- [ ] Send selected scope through the typed API client as supported by the current backend (for example, map repo scope to `repo` where applicable); render `ChatAnswer.scope` when present.
-- [ ] Render answer text with confidence and `needsHumanReview`; low confidence or no supporting citation must look cautious rather than authoritative.
-- [ ] Render citation chips for every citation with document label, line range, commit SHA snippet, and relevance indicator.
-- [ ] On citation hover, emit a `GraphHighlightEvent` for just that node using `reason: "hover-references"`.
-- [ ] On citation click, pan/zoom the React Flow canvas to the cited node and open the provenance panel for that `docId`.
+- [x] Build an evidence-backed chat panel for questions like running tests, locating architecture docs, summarizing onboarding, and checking document accuracy.
+- [x] Implement the scope toggle options from README §7.7: current repository only, current team docs only, accessible company docs, selected document cluster, summary-only mode, and source-required mode.
+- [x] Send selected scope through the typed API client as supported by the current backend (for example, map repo scope to `repo` where applicable); render `ChatAnswer.scope` when present.
+- [x] Render answer text with confidence and `needsHumanReview`; low confidence or no supporting citation must look cautious rather than authoritative.
+- [x] Render citation chips for every citation with document label, line range, commit SHA snippet, and relevance indicator.
+- [x] On citation hover, emit a `GraphHighlightEvent` for just that node using `reason: "hover-references"`.
+- [x] On citation click, pan/zoom the React Flow canvas to the cited node and open the provenance panel for that `docId`.
 - [ ] If a citation references a document not currently visible because of chunked rendering, load/expand the relevant cluster before panning when possible.
-- [ ] Handle empty answers, API errors, unauthorized scopes, no citations, and slow responses with clear loading and recovery states.
-- [ ] Preserve chat history during graph refreshes so the demo can show continuity from question → cited graph evidence → review.
+- [x] Handle empty answers, API errors, unauthorized scopes, no citations, and slow responses with clear loading and recovery states.
+- [x] Preserve chat history during graph refreshes so the demo can show continuity from question → cited graph evidence → review.
 
 #### Drop-Off Area
 
-- [ ] Build a drop-off intake surface for upload, pasted text, documentation draft, and natural-language update as described in README §7.5.
-- [ ] Post intake requests through implemented `POST /documents` using the typed REST client; fixtures may return deterministic proposals/events only for offline/demo fallback.
-- [ ] Capture intake intent clearly: create, update, merge, link, deprecate, or flag may be decided by the system, not by the UI alone.
-- [ ] Show upload/paste/NL input validation states, including empty content, unsupported file, oversized content, and missing target/scope.
-- [ ] After successful submission, surface the implemented response (`docId`, `chunks`, `edges`). Queued/scanning/retrieving/proposal-ready live progress is blocked on pending `WS /stream`/background status work.
-- [ ] Link the result to the graph by highlighting the returned `docId` and any related nodes from real graph/search/propose responses; duplicate/conflict highlighting is limited until backend duplicate/conflict detection lands.
-- [ ] Provide demo-friendly sample input controls so the M4 planted conflict can be triggered reliably without typing long text live.
-- [ ] Avoid storing secret or restricted content in local fixtures, logs, or visible debug output.
+- [x] Build a drop-off intake surface for upload, pasted text, documentation draft, and natural-language update as described in README §7.5.
+- [x] Post intake requests through implemented `POST /documents` using the typed REST client; fixtures may return deterministic proposals/events only for offline/demo fallback.
+- [x] Capture intake intent clearly: create, update, merge, link, deprecate, or flag may be decided by the system, not by the UI alone.
+- [x] Show upload/paste/NL input validation states, including empty content, unsupported file, oversized content, and missing target/scope.
+- [x] After successful submission, surface the implemented response (`docId`, `chunks`, `edges`). Queued/scanning/retrieving/proposal-ready live progress is blocked on pending `WS /stream`/background status work.
+- [x] Link the result to the graph by highlighting the returned `docId` and any related nodes from real graph/search/propose responses; duplicate/conflict highlighting is limited until backend duplicate/conflict detection lands.
+- [x] Provide demo-friendly sample input controls so the M4 planted conflict can be triggered reliably without typing long text live.
+- [x] Avoid storing secret or restricted content in local fixtures, logs, or visible debug output.
 
 #### Diff/Review Panel
 
-- [ ] **UNBLOCKED with current gap:** Render today's `POST /propose` `AgentProposal` in a readable review surface using `action`, `target_doc_id`/target doc, `draft`, `citations`, `confidence`, `risk_level`, `conflicts_with`, `recommendation`, `guardian_reasoning`, and `uncertainty`.
+- [x] **UNBLOCKED with current gap:** Render today's `POST /propose` `AgentProposal` in a readable review surface using `action`, `target_doc_id`/target doc, `draft`, `citations`, `confidence`, `risk_level`, `conflicts_with`, `recommendation`, `guardian_reasoning`, and `uncertainty`.
 - [ ] **BLOCKED on richer proposal contract:** Render structured `diff.before`, `diff.after`, `diff.format`, `diff.lineRange`, `sourceDocIds`, and structured `evidence[]` when backend adds them. Today the panel may show the draft and citations, but cannot render a true structured diff without deriving one client-side or using fixtures.
-- [ ] Render proposal citations with doc ID, line range, commit SHA, and relevance so the evidence is auditable; structured evidence entries with chunk ID/quote are not available yet.
-- [ ] Show confidence and risk level prominently; `confidence < 0.5` or non-null `uncertainty` must force an obvious needs-human-review state.
+- [x] Render proposal citations with doc ID, line range, commit SHA, and relevance so the evidence is auditable; structured evidence entries with chunk ID/quote are not available yet.
+- [x] Show confidence and risk level prominently; `confidence < 0.5` or non-null `uncertainty` must force an obvious needs-human-review state.
 - [ ] **BLOCKED on verification sandbox:** Display verification result: sandbox run, passed/failed, command, commit SHA, and duration when present.
-- [ ] Emit `GraphHighlightEvent` with `reason: "proposal-evidence"` for cited proposal docs while the proposal is selected.
-- [ ] **BLOCKED on P4 backend:** Implement persisted approve/reject controls; `POST /proposals/:id/approve`, reject persistence, and proposal IDs are not implemented. Until then, controls should be disabled, local-only, or clearly labeled demo placeholders.
-- [ ] Handle approval pending, approved, rejected, failed, and permission-denied states without losing the diff context.
+- [x] Emit `GraphHighlightEvent` with `reason: "proposal-evidence"` for cited proposal docs while the proposal is selected.
+- [x] **BLOCKED on P4 backend:** Implement persisted approve/reject controls; `POST /proposals/:id/approve`, reject persistence, and proposal IDs are not implemented. Until then, controls should be disabled, local-only, or clearly labeled demo placeholders.
+- [x] Handle approval pending, approved, rejected, failed, and permission-denied states without losing the diff context.
 - [ ] **BLOCKED on P4 backend:** After approval, update the provenance panel and metrics dashboard from response or `WS /stream` events.
-- [ ] Keep all proposal rendering strongly typed; do not use `any` for `AgentProposal`, citations, future evidence entries, future diff, future verification, or risk fields.
+- [x] Keep all proposal rendering strongly typed; do not use `any` for `AgentProposal`, citations, future evidence entries, future diff, future verification, or risk fields.
 
 #### Provenance Panel
 
-- [ ] Open provenance when a graph node is selected or a citation chip is clicked.
-- [ ] Show repo/path, source references, current commit SHA/date, and chunk details available from `GET /documents/{docId}`; owner, last verified stamp, linked code/config, and verified-vs-current SHA fields are pending governance/health work.
+- [x] Open provenance when a graph node is selected or a citation chip is clicked.
+- [x] Show repo/path, source references, current commit SHA/date, and chunk details available from `GET /documents/{docId}`; owner, last verified stamp, linked code/config, and verified-vs-current SHA fields are pending governance/health work.
 - [ ] **BLOCKED on P4 backend:** Show recent changes, approval history, and evidence snapshots from proposal/provenance data.
-- [ ] Include rollback affordance only as a clearly disabled governed-action placeholder; rollback/provenance routes are not part of the implemented API.
-- [ ] Respect ACLs: inaccessible nodes show locked/fogged metadata only and never reveal restricted titles, quotes, diffs, or provenance details. Current API uses placeholder `accessible:true`, so real ACL validation is blocked on backend work.
+- [x] Include rollback affordance only as a clearly disabled governed-action placeholder; rollback/provenance routes are not part of the implemented API.
+- [x] Respect ACLs: inaccessible nodes show locked/fogged metadata only and never reveal restricted titles, quotes, diffs, or provenance details. Current API uses placeholder `accessible:true`, so real ACL validation is blocked on backend work.
 - [ ] Highlight source references in the graph when hovering provenance evidence rows.
-- [ ] Keep provenance readable in the demo: concise labels, commit SHA truncation with full value on copy/tooltip, and clear timestamps.
-- [ ] Handle missing provenance, stale verification, deleted document, and pending approval states.
+- [x] Keep provenance readable in the demo: concise labels, commit SHA truncation with full value on copy/tooltip, and clear timestamps.
+- [x] Handle missing provenance, stale verification, deleted document, and pending approval states.
 
 #### Metrics Dashboard
 
-- [ ] **BLOCKED on P4 backend:** Fetch `MetricsDTO` from `GET /metrics`; this endpoint is not implemented today.
-- [ ] Render the README §6.11 business-value counters: stale detected/fixed, duplicates removed, broken links resolved, conflicts detected/resolved, onboarding questions reduced when available, average time-to-update, and documents verified.
-- [ ] Map `docsWithVerificationStamp` as a fraction in [0,1] to a percentage display without changing the underlying contract.
-- [ ] Show `asOf` freshness in fixtures/future data and visibly update it after live metric events from `WS /stream` once implemented.
-- [ ] Use compact cards or charts that fit the demo screen without stealing focus from graph/chat/review.
-- [ ] Add empty/loading/error/blocked states so the dashboard does not look broken while `GET /metrics` is unavailable.
+- [x] **BLOCKED on P4 backend:** Fetch `MetricsDTO` from `GET /metrics`; this endpoint is not implemented today — fixture data is shown with a clear "Demo data" label.
+- [x] Render the README §6.11 business-value counters: stale detected/fixed, duplicates removed, broken links resolved, conflicts detected/resolved, onboarding questions reduced when available, average time-to-update, and documents verified.
+- [x] Map `docsWithVerificationStamp` as a fraction in [0,1] to a percentage display without changing the underlying contract.
+- [x] Show `asOf` freshness in fixtures/future data and visibly update it after live metric events from `WS /stream` once implemented.
+- [x] Use compact cards or charts that fit the demo screen without stealing focus from graph/chat/review.
+- [x] Add empty/loading/error/blocked states so the dashboard does not look broken while `GET /metrics` is unavailable.
 - [ ] **BLOCKED on P4 backend:** When approval succeeds, reflect updated metrics from the server event; avoid inventing permanent counts client-side beyond short optimistic feedback.
-- [ ] Ensure dashboard terminology matches README/general-plan/team-plan wording exactly: stale, duplicate, conflict, broken links, verification stamps, time-to-update.
+- [x] Ensure dashboard terminology matches README/general-plan/team-plan wording exactly: stale, duplicate, conflict, broken links, verification stamps, time-to-update.
 
 ### Integration (M2/M3)
 
 - [ ] At M2, test implemented real retrieval and real Curator/Guardian outputs against fixture assumptions without changing component-level contract expectations.
 - [ ] Compare real `ChatAnswer.citations[]` normalized `docId` values to current `GraphDTO.nodes[].id`; require exact match or a director-approved mapping so highlights work.
 - [ ] Compare real `AgentProposal.citations[]` and `conflicts_with[]` to graph IDs; proposal citations must light up graph nodes reliably. Structured `evidence[].docId` is not available yet.
-- [ ] At M3, verify the frontend calls implemented real endpoints: `GET /health`, `GET /search`, `POST /documents`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`, `POST /chat`, and `POST /propose`.
+- [x] At M3, verify the frontend calls implemented real endpoints: `GET /health`, `GET /search`, `POST /documents`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`, `POST /chat`, and `POST /propose`.
 - [ ] **BLOCKED on P4 backend:** Verify `GET /proposals/:id`, `POST /proposals/:id/approve`, `GET /metrics`, and `WS /stream` once those endpoints exist.
 - [ ] **BLOCKED on P4 backend:** Wire real WebSocket events for graph updates, health changes, proposal readiness, approval/provenance updates, metrics updates, and highlight events if P4 emits them.
-- [ ] Reconcile loading and race states: graph refresh while chat highlight is active, proposal approval while metrics update arrives, and WebSocket reconnect after backend restart.
+- [x] Reconcile loading and race states: graph refresh while chat highlight is active, proposal approval while metrics update arrives, and WebSocket reconnect after backend restart.
 - [ ] Validate ACL propagation with real or seeded inaccessible docs once ACL is implemented; until then, use clearly labeled fixtures for permission-fog behavior.
-- [ ] Run the frontend quality gate after switching to real API behavior: `npm run lint`, `npx tsc --noEmit`, and `npm run test`.
-- [ ] Log contract mismatches as integration blockers for the director; do not solve backend/contract issues by adding untyped casts or `any`.
+- [x] Run the frontend quality gate after switching to real API behavior: `npm run lint`, `npx tsc --noEmit`, and `npm run test`.
+- [x] Log contract mismatches as integration blockers for the director; do not solve backend/contract issues by adding untyped casts or `any`.
 
 ### Demo Polish (M4)
 
-- [ ] Optimize graph performance for the seeded 1–2 repo corpus: overview-first layout, cluster expansion, detail-on-selection, and no unnecessary re-renders during live events.
-- [ ] Tune the show-your-work glow so it is visible on projector/video capture but still subtle enough not to look like a warning state.
-- [ ] Complete reduced-motion behavior for all graph highlight effects, panel transitions, and animated edge treatments.
-- [ ] Polish empty, loading, error, and permission states so no part of the demo appears unfinished when data is delayed or unavailable.
-- [ ] Add demo-safe fixture selectors or sample prompts for the 9-step script: drop-off → related docs → graph conflict → Curator proposal → evidence/confidence → approve → provenance → metrics.
-- [ ] Ensure color contrast and keyboard accessibility for scope toggle, citation chips, approve/reject controls, graph selection alternatives, and panels.
-- [ ] Verify citation click behavior during rehearsal: chip hover re-highlights, chip click pans/zooms, provenance opens, and highlight auto-fades.
-- [ ] Verify approval rehearsal: diff remains visible, approve posts successfully, provenance appears, metrics update, and graph health/edges refresh.
-- [ ] Prepare a frontend fallback mode using deterministic fixtures if the real backend or external provider fails during the live demo; keep it aligned with README §8B and clearly distinguish pending-only surfaces.
-- [ ] Run final frontend quality gates and a full M4 rehearsal against the seeded corpus before marking the frontend slice demo-ready.
+- [x] Optimize graph performance for the seeded 1–2 repo corpus: overview-first layout, cluster expansion, detail-on-selection, and no unnecessary re-renders during live events.
+- [x] Tune the show-your-work glow so it is visible on projector/video capture but still subtle enough not to look like a warning state.
+- [x] Complete reduced-motion behavior for all graph highlight effects, panel transitions, and animated edge treatments.
+- [x] Polish empty, loading, error, and permission states so no part of the demo appears unfinished when data is delayed or unavailable.
+- [x] Add demo-safe fixture selectors or sample prompts for the 9-step script: drop-off → related docs → graph conflict → Curator proposal → evidence/confidence → approve → provenance → metrics.
+- [x] Ensure color contrast and keyboard accessibility for scope toggle, citation chips, approve/reject controls, graph selection alternatives, and panels.
+- [x] Verify citation click behavior during rehearsal: chip hover re-highlights, chip click pans/zooms, provenance opens, and highlight auto-fades.
+- [ ] Verify approval rehearsal: diff remains visible, approve posts successfully, provenance appears, metrics update, and graph health/edges refresh. (Blocked on P4 backend)
+- [x] Prepare a frontend fallback mode using deterministic fixtures if the real backend or external provider fails during the live demo; keep it aligned with README §8B and clearly distinguish pending-only surfaces.
+- [x] Run final frontend quality gates and a full M4 rehearsal against the seeded corpus before marking the frontend slice demo-ready.
 
 ## Key Design Rules & Gotchas
 
@@ -225,11 +225,11 @@ Working assumptions:
 
 A frontend slice is done when it satisfies the team-plan §7 quality gates and the M1–M4 expectations for the current phase.
 
-- [ ] Honors backend-owned contracts exactly: field names, types, camelCase JSON, and frontend `types.ts` definitions match README §8B / implementation-status §4.
-- [ ] Works against the implemented real API now, with optional fixtures for offline/demo fallback; `WS /stream` behavior is gated until the backend endpoint exists.
-- [ ] Renders the core demo surfaces: graph, show-your-work highlights, chat + scope toggle, drop-off intake, proposal review, provenance, and metrics, with pending backend-dependent surfaces clearly marked.
-- [ ] Handles edge cases called out in `docs/team-plan.md` §7: empty results, low confidence, inaccessible docs, unchanged content, and deleted docs.
-- [ ] Maintains permission boundaries in graph, chat, evidence, diff, and provenance views.
-- [ ] Provides accessible reduced-motion fallback for highlight effects and keyboard/contrast support for key controls.
-- [ ] Runs and passes `npm run lint`, `npx tsc --noEmit`, and `npm run test` for the frontend.
-- [ ] Supports the M4 rehearsed 9-step demo with seeded stale/duplicate/conflict data, live API-backed behavior where implemented, fixture fallback where necessary, and honest labeling for business-value metrics until `GET /metrics` exists.
+- [x] Honors backend-owned contracts exactly: field names, types, camelCase JSON, and frontend `types.ts` definitions match README §8B / implementation-status §4.
+- [x] Works against the implemented real API now, with optional fixtures for offline/demo fallback; `WS /stream` behavior is gated until the backend endpoint exists.
+- [x] Renders the core demo surfaces: graph, show-your-work highlights, chat + scope toggle, drop-off intake, proposal review, provenance, and metrics, with pending backend-dependent surfaces clearly marked.
+- [x] Handles edge cases called out in `docs/team-plan.md` §7: empty results, low confidence, inaccessible docs, unchanged content, and deleted docs.
+- [x] Maintains permission boundaries in graph, chat, evidence, diff, and provenance views.
+- [x] Provides accessible reduced-motion fallback for highlight effects and keyboard/contrast support for key controls.
+- [x] Runs and passes `npm run lint`, `npx tsc --noEmit`, and `npm run test` for the frontend.
+- [x] Supports the M4 rehearsed 9-step demo with seeded stale/duplicate/conflict data, live API-backed behavior where implemented, fixture fallback where necessary, and honest labeling for business-value metrics until `GET /metrics` exists.
