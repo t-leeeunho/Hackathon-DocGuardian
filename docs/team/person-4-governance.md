@@ -1,7 +1,18 @@
 # Person 4 — Governance, Verification & Metrics
 
-> **As-built status (2026-06-23):** the Postgres store (documents/chunks/edges) exists; governance, approval, provenance, metrics, and the verification sandbox are NOT built yet. See [../implementation-status.md](../implementation-status.md).
-> Today there are no ACL columns/checks, no `approvals`/`provenance` tables, no `/metrics`, no `GET /proposals/:id`, no `POST /proposals/:id/approve`, and no `WS /stream`.
+> **As-built status (2026-06-24):** the governance slice is now **implemented** —
+> ACL (`app/governance/acl.py`), approval + staged-approval + rollback
+> (`service.py`), append-only provenance and proposals persistence (`store.py`,
+> Postgres `proposals`/`provenance` tables), derived node health/importance
+> (`health.py`), `MetricsDTO` (`metrics.py`), duplicate/conflict detection
+> (`app/processing/conflicts.py`), a **real Docker** verification sandbox
+> (`app/services/verification.py`), and the API routes `GET /proposals/:id`,
+> `POST /proposals/:id/approve`, `POST /proposals/:id/rollback`, `GET /metrics`,
+> `GET /documents/:id/provenance`, `POST /verify`, and `WS /stream`. The graph is
+> ACL-filtered with real health. **Pending:** wiring the frontend governance panels
+> to these endpoints, `POST /ingest/refresh`, and demo seed data. The checklist
+> below is the original plan; see [../implementation-status.md](../implementation-status.md)
+> for the authoritative as-built state.
 
 Own the enterprise-trust backend slice: permissions/ACL, approval workflow, provenance and rollback, metadata/graph persistence, metrics, real containerized verification sandbox, and the REST/WebSocket API plumbing for graph and proposals.
 
@@ -16,14 +27,13 @@ You own the Layer 4 backend implementation that sits between P2/P3's retrieval/a
 | Area | Files / modules | Responsibility |
 | --- | --- | --- |
 | Postgres + pgvector store | `backend/app/storage/db.py`, `queries.py`, `vectorstore.py` | Existing Postgres implementation: `init_schema()` creates `documents`, `chunks`, `edges` plus a `chunks.embedding` HNSW cosine index; `queries.py` exposes `list_doc_ids`, `get_document`, `get_graph`; `vectorstore.py` handles upserts and cosine search. README §10.4 locks one PostgreSQL instance for metadata, graph, audit, approvals, and provenance. |
-| Governance service | Planned `backend/app/services/governance.py` | Not built yet: ACL enforcement at retrieval, answer, and write; approval state machine; governed write orchestration; `ProvenanceEntry` creation; rollback. |
-| Verification service | Planned `backend/app/services/verification.py` | Not built yet: README §10.6 now targets a real containerized sandbox, not a mock. |
-| DTO assembly | Current `queries.get_graph`; future store/service methods | `GraphDTO` is assembled from Postgres rows today, but node `health`, `size`, and `accessible` are placeholders. `MetricsDTO` is not implemented. |
-| Async jobs | Simple job queue in your backend-owned area | Keep approval application, verification, metrics recomputation, and WebSocket fan-out off latency-sensitive request paths where practical. |
-| API router | Current `backend/app/main.py`; future `backend/app/api/graph.py` | `GET /graph` exists today in the single `app/main.py`; future split should add ACL-filtered graph nodes and health/importance-derived view fields. |
-| API router | Planned `backend/app/api/proposals.py` | Not built yet: `GET /proposals/:id`, `POST /proposals/:id/approve`, proposal lookup, approval, governed apply, provenance, rollback hooks. |
-| API router | Planned `backend/app/api/metrics.py` | Not built yet: `GET /metrics` returning aggregate `MetricsDTO` counters. |
-| API router | Planned `backend/app/api/stream.py` | Not built yet: `WS /stream` live proposal, graph, health, and metrics updates for the frontend. |
+| Governance service | `backend/app/governance/` (`acl.py`, `service.py`, `store.py`, `health.py`, `metrics.py`) | **Implemented:** ACL enforcement, approval + staged-approval state machine, governed write orchestration, `ProvenanceEntry` creation, rollback. |
+| Verification service | `backend/app/services/verification.py` | **Implemented:** real containerized Docker sandbox (`--network none`, resource caps, timeout); `available:false` when Docker is absent. |
+| DTO assembly | `governance/store.py` (`get_governed_graph`, `get_metrics_dto`) | `GraphDTO` carries **real** derived `health`/`importance` and is ACL-filtered; `MetricsDTO` is implemented. |
+| Async jobs | `backend/app/services/jobs.py` + `events.py` | In-memory job registry for async ingest + an in-process event bus feeding `WS /stream`. |
+| API router | `backend/app/main.py` | `GET /graph` (governed), `GET /metrics`, `GET /provenance/:id` implemented in the single `app/main.py`. |
+| API router | `backend/app/main.py` (proposals) | **Implemented:** `GET /proposals/:id`, `POST /proposals/:id/approve`, `POST /proposals/:id/rollback`. |
+| API router | `backend/app/main.py` (`/verify`, `WS /stream`) | **Implemented:** `POST /verify` and the `WS /stream` live feed (proposal/graph/metrics/ingest events). |
 
 Concrete persisted data:
 

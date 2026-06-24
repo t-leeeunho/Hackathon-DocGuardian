@@ -21,8 +21,10 @@ from pathlib import Path
 
 from app.embeddings.provider import get_embedding_provider
 from app.models import RawDocument
+from app.processing.conflicts import detect_conflicts_for_doc
 from app.processing.processor import chunk_document, extract_edges
-from app.storage.db import init_schema
+from app.processing.summarize import generate_summary
+from app.storage.db import get_conn, init_schema
 from app.storage.vectorstore import upsert_chunks, upsert_documents, upsert_edges
 
 # Text-based formats we can ingest directly. Binary formats (pdf, docx) would
@@ -53,25 +55,63 @@ def make_raw_document(name: str, content: str, namespace: str = "user") -> RawDo
     )
 
 
+class IngestError(RuntimeError):
+    """A core ingestion step failed; nothing was persisted (full rollback)."""
+
+
 def ingest_content(name: str, content: str, namespace: str = "user") -> dict:
-    """Ingest one piece of user content end-to-end into the live system."""
+    """Ingest one piece of user content end-to-end, **atomically**.
+
+    The whole insertion is all-or-nothing: the description, embeddings, document,
+    structural edges, chunks, and duplicate/conflict edges are written inside a
+    single database transaction. If **any** core step fails, the transaction is
+    rolled back and the system is left exactly as it was before — no half-applied
+    "ghost" document, no orphan chunks, no partial edges.
+
+    The only non-core step is the AI description, which already degrades to a
+    free extractive summary instead of failing.
+    """
     raw = make_raw_document(name, content, namespace)
-    chunks = chunk_document(raw)
-    edges = extract_edges(raw)
 
-    provider = get_embedding_provider()
-    init_schema(provider.dim)
+    try:
+        # 1. Derive content (pure / CPU) — before touching the DB.
+        chunks = chunk_document(raw)
+        edges = extract_edges(raw)
+        summary = generate_summary(content)  # never raises; falls back to extractive
 
-    upsert_documents([_doc_row(raw)])
-    upsert_edges([_edge_row(e) for e in edges])
-    if chunks:
-        embeddings = provider.embed([c.text for c in chunks])
-        upsert_chunks([_chunk_row(c) for c in chunks], embeddings)
+        # 2. Embed (the slow part) outside the transaction so we don't hold a
+        #    write lock open during model inference. A failure here aborts before
+        #    anything is written.
+        provider = get_embedding_provider()
+        init_schema(provider.dim)
+        embeddings = provider.embed([c.text for c in chunks]) if chunks else []
+
+        # 3. Single atomic transaction: doc + edges + chunks + conflict edges.
+        #    psycopg commits on clean exit and rolls back on ANY exception.
+        with get_conn() as conn:
+            doc_row = {**_doc_row(raw), "summary": summary}
+            upsert_documents([doc_row], conn=conn)
+            if edges:
+                upsert_edges([_edge_row(e) for e in edges], conn=conn)
+            if chunks:
+                upsert_chunks([_chunk_row(c) for c in chunks], embeddings, conn=conn)
+                # Real-time duplicate/conflict detection in the SAME transaction:
+                # the new chunks are visible to their own tx, and any failure here
+                # rolls the entire ingest back.
+                conflict_edges = detect_conflicts_for_doc(raw.doc_id, conn=conn)
+            else:
+                conflict_edges = 0
+    except UnsupportedFormatError:
+        raise
+    except Exception as exc:  # any core failure -> nothing persisted
+        raise IngestError(f"ingest failed and was rolled back: {exc}") from exc
 
     return {
         "doc_id": raw.doc_id,
         "chunks": len(chunks),
-        "edges": len(edges),
+        "edges": len(edges) + conflict_edges,
+        "conflictEdges": conflict_edges,
+        "summary": summary,
     }
 
 

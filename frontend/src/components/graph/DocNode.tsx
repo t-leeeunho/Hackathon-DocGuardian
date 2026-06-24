@@ -13,131 +13,76 @@ interface DocNodeProps {
   selected: boolean;
 }
 
+// 4-pointed sparkle star (✦)
+const STAR_CLIP =
+  'polygon(50% 2%, 53% 47%, 98% 50%, 53% 53%, 50% 98%, 47% 53%, 2% 50%, 47% 47%)';
+
 const HEALTH_CONFIG = {
-  green: {
-    color: '#22d3a0',
-    glow: '0 0 12px #22d3a0, 0 0 24px rgba(34, 211, 160, 0.5)',
-    glowBright: '0 0 20px #22d3a0, 0 0 40px rgba(34, 211, 160, 0.7), 0 0 60px rgba(34, 211, 160, 0.3)',
-    animation: 'breatheGreen 3s ease-in-out infinite',
-    bg: 'radial-gradient(circle at 35% 35%, #34d399, #059669)',
-    ring: 'rgba(34, 211, 160, 0.6)',
-  },
-  yellow: {
-    color: '#f59e0b',
-    glow: '0 0 12px #f59e0b, 0 0 24px rgba(245, 158, 11, 0.5)',
-    glowBright: '0 0 20px #f59e0b, 0 0 40px rgba(245, 158, 11, 0.7), 0 0 60px rgba(245, 158, 11, 0.3)',
-    animation: 'breatheYellow 3s ease-in-out infinite',
-    bg: 'radial-gradient(circle at 35% 35%, #fcd34d, #d97706)',
-    ring: 'rgba(245, 158, 11, 0.6)',
-  },
-  red: {
-    color: '#ef4444',
-    glow: '0 0 12px #ef4444, 0 0 24px rgba(239, 68, 68, 0.5)',
-    glowBright: '0 0 20px #ef4444, 0 0 40px rgba(239, 68, 68, 0.7), 0 0 60px rgba(239, 68, 68, 0.3)',
-    animation: 'breatheRed 2s ease-in-out infinite',
-    bg: 'radial-gradient(circle at 35% 35%, #f87171, #dc2626)',
-    ring: 'rgba(239, 68, 68, 0.6)',
-  },
-  gray: {
-    color: '#6b7280',
-    glow: 'none',
-    glowBright: '0 0 8px rgba(107, 114, 128, 0.4)',
-    animation: 'none',
-    bg: 'radial-gradient(circle at 35% 35%, #9ca3af, #4b5563)',
-    ring: 'rgba(107, 114, 128, 0.4)',
-  },
+  green:  { color: '#22d3a0', shadow: 'drop-shadow(0 0 5px #22d3a0) drop-shadow(0 0 12px rgba(34,211,160,0.6))', shadowBright: 'drop-shadow(0 0 8px #22d3a0) drop-shadow(0 0 20px #22d3a0)',  animation: 'breatheGreen 3s ease-in-out infinite', bg: 'linear-gradient(135deg, #34d399, #059669)' },
+  yellow: { color: '#f59e0b', shadow: 'drop-shadow(0 0 5px #f59e0b) drop-shadow(0 0 12px rgba(245,158,11,0.6))', shadowBright: 'drop-shadow(0 0 8px #f59e0b) drop-shadow(0 0 20px #f59e0b)', animation: 'breatheYellow 3s ease-in-out infinite', bg: 'linear-gradient(135deg, #fcd34d, #d97706)' },
+  red:    { color: '#ef4444', shadow: 'drop-shadow(0 0 5px #ef4444) drop-shadow(0 0 12px rgba(239,68,68,0.6))',   shadowBright: 'drop-shadow(0 0 8px #ef4444) drop-shadow(0 0 20px #ef4444)',   animation: 'breatheRed 2s ease-in-out infinite',   bg: 'linear-gradient(135deg, #f87171, #dc2626)' },
+  gray:   { color: '#6b7280', shadow: 'drop-shadow(0 0 3px rgba(107,114,128,0.4))',                               shadowBright: 'drop-shadow(0 0 6px rgba(107,114,128,0.7))',                  animation: 'none',                                  bg: 'linear-gradient(135deg, #9ca3af, #4b5563)' },
 };
 
-// Normalize size 0-1 → 18-40px diameter
-function nodeDiameter(size: number): number {
+// Normalize size 0-1 → 16-32px
+function nodeSize(size: number): number {
   const clamped = Math.max(0, Math.min(1, size));
-  return Math.round(18 + clamped * 22);
+  return Math.round(16 + clamped * 16);
 }
 
 export const DocNode = memo(function DocNode({ data, selected }: DocNodeProps) {
   const cfg = HEALTH_CONFIG[data.health] || HEALTH_CONFIG.gray;
-  const diameter = nodeDiameter(data.size);
+  const sz = nodeSize(data.size);
   const isHighlighted = data.highlighted || selected;
 
-  const label =
-    data.label.length > 20 ? data.label.slice(0, 18) + '…' : data.label;
+  const label = data.label.length > 18 ? data.label.slice(0, 16) + '…' : data.label;
 
   const nodeStyle: React.CSSProperties = {
-    width: diameter,
-    height: diameter,
-    borderRadius: '50%',
-    background: data.accessible ? cfg.bg : undefined,
-    backgroundColor: data.accessible ? undefined : '#1f2937',
-    boxShadow: isHighlighted
-      ? `0 0 0 3px ${cfg.ring}, ${cfg.glowBright}`
-      : cfg.glow,
+    width: sz,
+    height: sz,
+    clipPath: STAR_CLIP,
+    background: data.accessible ? cfg.bg : '#374151',
+    filter: !data.accessible
+      ? 'grayscale(1) opacity(0.35)'
+      : isHighlighted
+        ? cfg.shadowBright
+        : cfg.shadow,
     animation: data.accessible && !isHighlighted ? cfg.animation : undefined,
-    filter: !data.accessible ? 'grayscale(1) opacity(0.4)' : undefined,
     cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
-    transform: isHighlighted ? 'scale(1.1)' : undefined,
-    border: selected ? `2px solid ${cfg.color}` : '2px solid rgba(255,255,255,0.08)',
+    transition: 'transform 0.15s ease, filter 0.15s ease',
+    transform: isHighlighted ? 'scale(1.35) rotate(15deg)' : 'rotate(0deg)',
+    flexShrink: 0,
   };
 
   const labelStyle: React.CSSProperties = {
     position: 'absolute',
-    bottom: -(diameter < 30 ? 14 : 16),
+    bottom: -13,
     left: '50%',
     transform: 'translateX(-50%)',
-    fontSize: '9px',
-    color: 'rgba(226, 232, 240, 0.7)',
+    fontSize: '8px',
+    color: 'rgba(203, 213, 225, 0.75)',
     whiteSpace: 'nowrap',
     pointerEvents: 'none',
-    textShadow: `0 0 8px ${cfg.color}`,
+    textShadow: `0 0 6px ${cfg.color}`,
     fontFamily: 'system-ui, sans-serif',
     letterSpacing: '0.02em',
   };
 
   return (
     <div style={{ position: 'relative', display: 'inline-flex', flexDirection: 'column', alignItems: 'center' }}>
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{ background: 'transparent', border: 'none', width: 1, height: 1 }}
-      />
+      <Handle type="target" position={Position.Top}    style={{ background: 'transparent', border: 'none', width: 1, height: 1 }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: 'transparent', border: 'none', width: 1, height: 1 }} />
+      <Handle type="target" position={Position.Left}   style={{ background: 'transparent', border: 'none', width: 1, height: 1 }} />
+      <Handle type="source" position={Position.Right}  style={{ background: 'transparent', border: 'none', width: 1, height: 1 }} />
 
       <div style={nodeStyle} className={isHighlighted ? 'node-highlighted' : ''}>
-        {/* Inner highlight shimmer */}
-        {data.accessible && (
-          <div
-            style={{
-              position: 'absolute',
-              top: '15%',
-              left: '15%',
-              width: '30%',
-              height: '30%',
-              borderRadius: '50%',
-              background: 'rgba(255, 255, 255, 0.25)',
-              pointerEvents: 'none',
-            }}
-          />
-        )}
-
-        {/* Lock icon for inaccessible */}
         {!data.accessible && (
-          <Lock
-            size={Math.max(10, diameter * 0.35)}
-            style={{ color: '#6b7280', opacity: 0.8 }}
-          />
+          <Lock size={Math.max(6, sz * 0.4)} style={{ color: '#9ca3af', opacity: 0.8, position: 'absolute' }} />
         )}
       </div>
 
       <div style={labelStyle}>{label}</div>
-
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{ background: 'transparent', border: 'none', width: 1, height: 1 }}
-      />
     </div>
   );
 });
+

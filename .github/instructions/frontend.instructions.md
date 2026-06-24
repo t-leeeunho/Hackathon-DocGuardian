@@ -6,8 +6,11 @@ applyTo: "frontend/**"
 
 Applies to all files under `frontend/`. Read alongside `.github/copilot-instructions.md`.
 
-> As of the as-built snapshot in `docs/implementation-status.md`, **no frontend exists yet**.
-> The guidance below is the intended frontend convention once it is scaffolded.
+> As of the as-built snapshot in `docs/implementation-status.md`, the frontend is
+> **scaffolded and buildable** (`frontend/src/lib/{types,api,fixtures}.ts`, hooks,
+> and components; `npm run lint`/`test`/`build` green). It consumes the API and
+> live-refreshes over `WS /stream`. Remaining work is wiring governance panels
+> (approve/metrics/provenance) from fixtures to the live endpoints.
 
 ## Language & style
 
@@ -20,8 +23,8 @@ Applies to all files under `frontend/`. Read alongside `.github/copilot-instruct
 
 ## Contracts
 
-- There is currently no `frontend/src/lib/types.ts`. When created, it must mirror the
-  **camelCase API responses** implemented by the backend and documented in README §8B
+- `frontend/src/lib/types.ts` **exists** and mirrors the **camelCase API responses**
+  implemented by the backend and documented in README §8B
   (`docId`, `chunkId`, `headingPath`, `lineRange`, `commitSha`, etc.).
 - Do not mirror the backend's snake_case core models directly into UI payloads. Core
   ingestion/processing models live in `backend/app/models.py`; frontend-facing DTOs
@@ -53,8 +56,8 @@ Applies to all files under `frontend/`. Read alongside `.github/copilot-instruct
 ## Graph & visual semantics (match the spec)
 
 - Node **color** from `health`: green = fresh/verified, yellow = aging, red =
-  stale/conflicting/broken, gray/locked = inaccessible (README §7.9). Note that
-  backend graph health/accessibility are placeholders today.
+  stale/conflicting/broken, gray/locked = inaccessible (README §7.9). The backend
+  `/graph` now serves real derived health/importance (ACL-filtered).
 - Node **size** from `importance`/`size` (§7.10) — normalize in the API adapter, not
   by editing the contract.
 - `conflicts-with` edges render as **red dashed** lines (§7.13); keep them the

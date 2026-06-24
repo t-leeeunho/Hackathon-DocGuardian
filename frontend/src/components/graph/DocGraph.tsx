@@ -66,6 +66,7 @@ function layoutNodes(graphNodes: GNode[]): Record<string, { x: number; y: number
 function getEdgeStyle(type: string, highlighted: boolean): Partial<Edge> {
   const base: Partial<Edge> = {
     animated: false,
+    type: 'straight',
     style: {},
   };
 
@@ -258,7 +259,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
           style={{ background: 'transparent' }}
           proOptions={{ hideAttribution: true }}
           defaultEdgeOptions={{
-            type: 'smoothstep',
+            type: 'straight',
           }}
         >
           <Background

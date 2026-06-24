@@ -256,7 +256,9 @@ Rules:
 3. Be concise and engineering-accurate: give the concrete command, path, config value, or step
    that answers the question — not a summary of the docs. Put commands and paths in backticks.
 4. Set confidence in [0,1] to how directly the SOURCES support the answer: ~0.9 when a source
-   states it outright, ~0.6 when you infer it, <0.5 when the evidence is thin."""
+   states it outright, ~0.6 when you infer it, <0.5 when the evidence is thin.
+5. In `reasoning`, give a brief trace (1-3 short sentences) of HOW you derived the answer from
+   the sources, e.g. "From [1] I inferred the clone step; from [2] the .NET build command\"."""
 
 
 def curator_chat_node(state: AgentState) -> AgentState:
@@ -266,8 +268,12 @@ def curator_chat_node(state: AgentState) -> AgentState:
     # Short-circuit: no usable evidence -> explicit "needs human review" (no LLM cost).
     if not rows or top_score < WEAK_EVIDENCE_THRESHOLD:
         answer = ChatAnswer(
-            answer="I'm not sure. The available documentation does not clearly answer "
-            "this. This needs human review.",
+            answer="I'm DocGuardian's documentation assistant, so I answer only from the "
+            "indexed docs — and I couldn't find evidence for that, so I'm routing this to "
+            "human review. Try asking about a specific project's setup, build, "
+            "configuration, or APIs (e.g. \"How do I build Garnet from source?\").",
+            reasoning="No retrieved source scored above the evidence threshold, so I "
+            "declined to answer rather than guess.",
             citations=_citations_from_rows(rows[:3]),
             confidence=round(_clamp01(top_score), 2),
             needs_human_review=True,

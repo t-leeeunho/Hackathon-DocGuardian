@@ -1,11 +1,14 @@
 # DocGuardian AI — Planning Documentation
 
 This folder contains the **implementation plan** for DocGuardian AI, kept in sync
-with the code. The **backend is implemented**; the frontend, governance, metrics,
-and verification are not yet. The product spec lives in the root
-[`README.md`](../README.md); these documents turn it into an actionable build plan.
-For the precise as-built snapshot, see
-**[`implementation-status.md`](implementation-status.md)**.
+with the code. The **backend is implemented** (pipeline, agents, governance,
+conflict detection, verification sandbox, async ingest + `WS /stream`) and the
+**frontend is scaffolded and buildable**; the main remaining work is wiring the
+frontend governance panels to the live endpoints. The product spec lives in the
+root [`README.md`](../README.md); these documents turn it into an actionable build
+plan. For the precise as-built snapshot, see
+**[`implementation-status.md`](implementation-status.md)**; for the API contract the
+frontend consumes, see **[`api.md`](api.md)**.
 
 ## What is DocGuardian AI?
 
@@ -20,6 +23,9 @@ rollback. See [`README.md`](../README.md) for the full spec.
 1. **[`implementation-status.md`](implementation-status.md)** — the **as-built snapshot**:
    what the backend actually does today, the real API (README §8B), the actual
    contracts, and what's still pending. *Read this first to know reality.*
+2. **[`api.md`](api.md)** — the **backend API reference**: every endpoint, request/
+   response shape, the WebSocket events, and the end-to-end flows. *Start here for
+   frontend work.*
 2. **[`general-plan.md`](general-plan.md)** — the **general plan**: problem &
    solution, MVP scope, the 5-layer architecture, runtime agent design, locked tech
    stack, the data contracts, the parallel execution model, phase status, the demo
@@ -61,15 +67,18 @@ the duplicate/conflict, governance, and metrics work builds on the existing stor
 See `general-plan.md` §8 and `team-plan.md` §2 for ownership details. *(Only the
 `/chat` and `/propose` agents need Azure OpenAI.)*
 
-## Current status (2026-06-23)
+## Current status (2026-06-24)
 
 - ✅ Product spec (`README.md`) + these planning docs (kept in sync with the code).
 - ✅ **Backend built:** ingestion → processing → embeddings → pgvector retrieval →
-  LangGraph Curator/Guardian agents → FastAPI (`/health`, `/search`, `/documents`,
-  `/tree`, `/graph`, `/documents/{id}`, `/chat`, `/propose`) + CLI scripts.
-- ⬜ **Pending:** duplicate/conflict detection + node health; governance (ACL,
-  approval, provenance, rollback); metrics; verification sandbox; `WS /stream`; and
-  the **entire frontend**.
+  LangGraph Curator/Guardian agents → FastAPI, **plus governance** (ACL, approval/
+  rollback, append-only provenance, duplicate/conflict detection, derived health,
+  `/metrics`), a **real Docker verification sandbox**, atomic intake with AI
+  summaries, and async ingest + `WS /stream`. 29 pytest pass.
+- 🟡 **Frontend scaffolded & buildable:** graph, chat, drop-off, diff/review,
+  provenance, metrics; consumes the API and live-refreshes over `WS /stream`.
+- ⬜ **Pending:** wiring the frontend governance panels (approve/metrics/provenance)
+  to the live endpoints, `POST /ingest/refresh`, and demo seed data.
 
 > See [`implementation-status.md`](implementation-status.md) for the full as-built
 > matrix, then follow the status-aware TODOs in `team-plan.md` §5 and each person's

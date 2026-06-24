@@ -79,6 +79,11 @@ class ChatAnswer(BaseModel):
     scope: Optional[str] = Field(
         None, description="repo scope this answer was constrained to (set at runtime)"
     )
+    reasoning: str = Field(
+        "",
+        description="brief trace of how the answer was derived from the sources, "
+        "e.g. 'From the build guide I inferred the .NET 8 step; ...'",
+    )
     citations: list[Citation] = Field(default_factory=list)
     confidence: float = Field(..., ge=0, le=1)
     needs_human_review: bool = Field(

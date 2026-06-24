@@ -10,14 +10,20 @@
 ## 1. Summary
 
 The **backend ingestion → processing → embedding → retrieval → agent** pipeline is
-implemented and runs locally. The HTTP API (README §8B) is a thin FastAPI wrapper
-over verified CLI logic. The **React frontend is now scaffolded and buildable**
-(typecheck + tests + production build all green); it consumes the API and falls
-back to demo fixtures when the backend is offline. Governance (ACL, approval,
-provenance, rollback), metrics, the verification sandbox, duplicate/conflict
-detection, and live WebSocket updates are **not implemented yet** — they remain
-planned (README §6, §10.6–10.7), and the governance-dependent UI panels (metrics,
-proposal approve/reject) render against fixtures until those endpoints land.
+implemented and runs locally, and the backend now also includes the **governance
+slice**: ACL enforcement, the approval → apply → provenance → rollback flow,
+duplicate/conflict detection, derived node health/importance, a `MetricsDTO`
+aggregation, a **real containerized verification sandbox** (Docker), and an
+**async ingest path** (`202 + jobId`) with a live `WS /stream` event feed. Document
+intake is **atomic** (all-or-nothing) and generates a one-line AI/extractive
+description shown in the sidebar tree. The **React frontend is scaffolded and
+buildable** (typecheck + tests + production build all green); it consumes the API,
+live-refreshes over the WebSocket, and falls back to demo fixtures when offline.
+
+Remaining work: wiring the frontend governance panels (approve/reject, metrics,
+provenance) to the live endpoints, `POST /ingest/refresh`, demo seed data, and
+backend lint/format tooling. The sandbox runs real containers when Docker is
+present and otherwise reports `available:false` (never a fake pass).
 
 ---
 
@@ -26,13 +32,13 @@ proposal approve/reject) render against fixtures until those endpoints land.
 | Area | Locked choice | Built today? |
 | --- | --- | --- |
 | Backend | Python + FastAPI, Pydantic v2 | ✅ Yes |
-| Storage | **Single PostgreSQL** (metadata + graph + audit/provenance) | ✅ Postgres tables: `documents`, `chunks`, `edges` (audit/approval/provenance tables **not yet**) |
+| Storage | **Single PostgreSQL** (metadata + graph + audit/provenance) | ✅ `documents` (+governance cols), `chunks`, `edges`, **`proposals`**, append-only **`provenance`** |
 | Vector index | **pgvector** in the same Postgres | ✅ `chunks.embedding VECTOR(dim)` + HNSW cosine index |
 | Embeddings | Provider-abstracted; **local fastembed default**, Azure optional | ✅ `LocalEmbeddingProvider` (BAAI/bge-small-en-v1.5, 384-dim) / `AzureEmbeddingProvider` |
 | LLM agents | **Azure OpenAI** chat (one deployment), two agents | ✅ Curator + Guardian via **LangGraph**; Azure **required** for agents (503 otherwise) |
-| Frontend | React + TS + Vite + Tailwind + **React Flow (2D)** + **Monaco** | 🟡 Scaffolded (builds; demo-mode fixtures; consumes API) |
-| Verification sandbox | Containerized, real (README §10.6) | ❌ Not implemented |
-| Governance/auth | Mocked auth + real ACL/approval/provenance on Postgres (README §10.7) | ❌ Not implemented |
+| Frontend | React + TS + Vite + Tailwind + **React Flow (2D)** + **Monaco** | 🟡 Scaffolded (builds; live WS refresh; demo-mode fixtures) |
+| Verification sandbox | Containerized, real (README §10.6) | ✅ Real Docker (`--network none`, mem/cpu/pids caps, timeout); `available:false` if no Docker |
+| Governance/auth | Mocked auth + real ACL/approval/provenance on Postgres (README §10.7) | ✅ Mocked `Principal` + real ACL, approval, append-only provenance, rollback |
 
 > Note: the local-first **fastembed default** means the whole ingestion + retrieval
 > path runs with **no Azure** at all. Azure is the default for the `/chat` and
@@ -55,23 +61,37 @@ backend/
 │   ├── main.py                 # FastAPI app — ALL endpoints + camelCase API DTOs
 │   ├── tree.py                 # build_tree() for the left-sidebar file tree
 │   ├── agents/
-│   │   ├── graph.py            # LangGraph chat + propose graphs; no-evidence short-circuit + evidence gate
+│   │   ├── graph.py            # LangGraph chat + propose graphs; no-evidence short-circuit + evidence gate; reasoning trace
 │   │   ├── llm.py              # Chat factory: CHAT_PROVIDER azure|fake (get_chat_llm) + FakeChatLLM + AzureNotConfiguredError
-│   │   └── schemas.py          # Citation/Evidence/ProposalDiff/Verification, ChatAnswer, CuratorDraft, GuardianReview, AgentProposal
+│   │   └── schemas.py          # Citation/Evidence/ProposalDiff/Verification, ChatAnswer (+reasoning), CuratorDraft, GuardianReview, AgentProposal
+│   ├── governance/            # GOVERNANCE SLICE
+│   │   ├── acl.py             # Principal + can_access/can_write (pure, fail-closed)
+│   │   ├── health.py          # derive_health / derive_importance (pure)
+│   │   ├── metrics.py         # compute_metrics -> MetricsDTO (pure)
+│   │   ├── store.py           # proposals CRUD, append-only provenance, governed graph
+│   │   ├── service.py         # approve / staged-approval / rollback flow
+│   │   └── serialize.py       # snake->camel for the API boundary
+│   ├── services/             # SIDE-EFFECTING SERVICES
+│   │   ├── verification.py    # real Docker sandbox (SandboxRequest/Result)
+│   │   ├── events.py          # in-process pub/sub bus for WS /stream
+│   │   └── jobs.py            # in-memory async ingest job registry
 │   ├── embeddings/
 │   │   └── provider.py         # EmbeddingProvider ABC + Local (fastembed) + Azure
 │   ├── ingestion/
 │   │   ├── git_ingest.py       # sparse/shallow clone + commit metadata -> RawDocument
-│   │   └── intake.py           # user drop-off -> same RawDocument path
+│   │   └── intake.py           # user drop-off -> atomic ingest (txn) + AI summary
 │   ├── processing/
-│   │   └── processor.py        # heading-aware chunk_document() + extract_edges()
+│   │   ├── processor.py        # heading-aware chunk_document() + extract_edges()
+│   │   ├── conflicts.py        # duplicate/conflict edge detection (≥0.92 / ≥0.85)
+│   │   └── summarize.py        # one-line doc description (AI + extractive fallback)
 │   └── storage/
-│       ├── db.py               # Postgres+pgvector connection + init_schema()
-│       ├── queries.py          # list_doc_ids, get_document, get_graph (camelCase out)
-│       └── vectorstore.py      # upsert_documents/chunks/edges + cosine search
+│       ├── db.py               # Postgres+pgvector + init_schema() (+governance tables)
+│       ├── queries.py          # list_doc_ids, get_document, get_graph, get_doc_summaries
+│       └── vectorstore.py      # upserts (optional shared conn) + cosine search
 └── scripts/
     ├── run_ingest.py           # ingest -> process -> JSONL under data/_processed/
     ├── load_vectors.py         # embed JSONL chunks + load into pgvector
+    ├── detect_conflicts.py     # batch duplicate/conflict edge detection
     ├── add_file.py             # CLI drop-off intake
     └── search.py               # CLI semantic search
 ```
@@ -79,12 +99,12 @@ backend/
 **Differences from the original plan's assumed layout:**
 - `app/models.py` is a **single file**, not a `models/` package.
 - `app/main.py` holds **all endpoints**, not per-domain router files (`api/*.py`).
-- Storage lives in `app/storage/` (not `app/store/`); there is no separate
-  `services/` package — retrieval/dedup/governance services are not yet split out.
+- Storage lives in `app/storage/`; governance logic lives in `app/governance/`
+  and side-effecting services in `app/services/` (verification, events, jobs).
 - AI provider split: `app/agents/` (chat via LangGraph + Azure) and
   `app/embeddings/` (vectors). There is no `app/ai/providers/` package.
 - There is a `scripts/` CLI used to verify the pipeline without the API.
-- Dependencies are in `requirements.txt` (no `pyproject.toml`, ruff/black/pytest).
+- Dependencies are in `requirements.txt`; `pytest` is configured (no ruff/black yet).
 
 ### 3.1 Actual Frontend Layout (as built)
 
@@ -125,19 +145,27 @@ Base URL (local): `http://localhost:8000`. CORS allows the Vite dev server
 | --- | --- | --- | --- |
 | `GET` | `/health` | Liveness + embedding provider/dim | `{status, embeddingProvider, dim}` |
 | `GET` | `/search?q=&repo=&k=` | Semantic search (LangChain retriever target) | pgvector cosine; `matches[]` camelCase |
-| `POST` | `/documents` | Drop-off intake (upload/paste) | text formats only; `415` for binary; lands under `user/` |
-| `GET` | `/tree?namespace=` | File-system tree (left sidebar) | nested `{name,type,path,children?}` |
-| `GET` | `/graph?repo=` | Document graph (nodes + edges) | health/size/accessible are **placeholders** today |
+| `POST` | `/documents` | Drop-off intake (upload/paste) | atomic; text only; `415` binary; `?background=true` → `202`+job |
+| `GET` | `/jobs/{jobId}` | Async ingest job status | `{jobId,docId,status,result,error}` |
+| `GET` | `/tree?namespace=` | File-system tree (left sidebar) | nested `{name,type,path,summary?,children?}` |
+| `GET` | `/graph?repo=` | Document graph (nodes + edges) | **real** derived health/importance; ACL-filtered |
 | `GET` | `/documents/{docId}` | Single document + its chunks | camelCase |
+| `GET` | `/provenance/{docId}` | Append-only audit history | camelCase `ProvenanceEntry[]` |
 | `POST` | `/chat` | Curator agent — evidence-backed answer | LangGraph; **503** if Azure not configured |
-| `POST` | `/propose` | Curator + Guardian — proposed change | LangGraph; **503** if Azure not configured |
+| `POST` | `/propose` | Curator + Guardian — proposed change | LangGraph; persisted to `proposals`; **503** if no Azure |
+| `GET` | `/proposals/{id}` | Proposal + approval/provenance context | camelCase |
+| `POST` | `/proposals/{id}/approve` | Approve + apply (writes provenance) | `202` if staged-approval required |
+| `POST` | `/proposals/{id}/rollback` | Roll back an applied proposal | append-only new provenance entry |
+| `GET` | `/metrics` | Governance dashboard counters | `MetricsDTO` (camelCase) |
+| `POST` | `/verify` | Run a command in the Docker sandbox | real container; `available:false` if no Docker |
+| `WS` | `/stream` | Live event feed (ingest/graph/metrics/proposal) | small typed envelopes + heartbeat |
 
-**Not yet implemented** (planned in README §6/§8A.5): `POST /ingest/refresh`,
-`GET /proposals/:id`, `POST /proposals/:id/approve`, `GET /metrics`, `WS /stream`.
+**Not yet implemented** (planned in README §6/§8A.5): `POST /ingest/refresh`.
 
 The API responses are **camelCase** (`docId`, `chunkId`, `headingPath`,
-`lineRange`, `commitSha`) — implemented as dedicated response DTOs in `main.py`
-and camelCase dicts in `queries.py`.
+`lineRange`, `commitSha`). The agent endpoints (`/chat`, `/propose`, `/proposals/:id`)
+emit snake_case internally and are deep-converted to camelCase at the boundary
+(`governance/serialize.py`; the frontend client also normalizes).
 
 ---
 
@@ -154,19 +182,24 @@ There are **three layers** of models — not one frozen camelCase package:
    contract the frontend will consume actually lives.
 3. **Agent structured outputs** — `app/agents/schemas.py`. Two layers: lean LLM
    I/O schemas the model fills — `ChatAnswer` (`answer`, `scope`, `citations`,
-   `confidence`, `needs_human_review`), `CuratorDraft` (drafting surface), and
-   `GuardianReview` (judgment surface) — plus the richer response contract
-   `AgentProposal` aligned with README §8A.4 (`proposal_id`, `action`,
+   `reasoning`, `confidence`, `needs_human_review`), `CuratorDraft` (drafting
+   surface), and `GuardianReview` (judgment surface) — plus the richer response
+   contract `AgentProposal` aligned with README §8A.4 (`proposal_id`, `action`,
    `target_doc_id`, `source_doc_ids`, `diff{}`, `draft`, `citations`, `evidence[]`,
    `confidence`, `risk_level`, `conflicts_with`, `verification{}`, Guardian fields
    `recommendation`/`guardian_reasoning`/`uncertainty`, `proposed_by`, `created_at`).
    New `Evidence`, `ProposalDiff`, and `Verification` sub-models support it.
+4. **Governance contracts** — `app/governance/`: `Principal` (ACL), `DocSignals`
+   (health/importance inputs), `MetricsDTO` (camelCase counters), persisted
+   `proposals`/`provenance` rows, and `SandboxRequest`/`SandboxResult` in
+   `app/services/verification.py`.
 
 > `AgentProposal` now carries the README §8A.4 fields (`proposal_id`,
 > `source_doc_ids`, `diff{}`, `evidence[]`, `verification{}`), but they are assembled
 > **deterministically by the graph** from retrieved rows — the model only fills the
 > lean `CuratorDraft`/`GuardianReview`, never provenance. `verification` stays `null`
-> until the P4 sandbox runs.
+> until the P4 sandbox runs against a proposal; `evidence[]` is system-populated from
+> grounded retrieval rows, never the model.
 
 ---
 
@@ -220,10 +253,27 @@ chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
   structural `references` edges from same-repo markdown links.
 - **Embeddings** (`embeddings/provider.py`): fastembed local default
   (auto-detects dim), Azure optional via `EMBEDDING_PROVIDER=azure`.
-- **Storage** (`storage/`): Postgres `documents`/`chunks`/`edges`; `chunks.embedding`
-  is a pgvector column with an HNSW cosine index; upserts use `ON CONFLICT` for
-  idempotency; search is `1 - (embedding <=> q)` with optional `doc_id` prefix
-  filter by `shortName`.
+- **Storage** (`storage/`): Postgres `documents`/`chunks`/`edges` plus `proposals`
+  and append-only `provenance`; `chunks.embedding` is a pgvector column with an
+  HNSW cosine index; upserts use `ON CONFLICT` for idempotency and accept an
+  optional shared connection so a whole ingest can be one transaction; search is
+  `1 - (embedding <=> q)` with optional `doc_id` prefix filter by `shortName`.
+- **Drop-off intake** (`ingestion/intake.py`): **atomic** — summary + embed +
+  doc/edges/chunks + incremental conflict detection commit together or roll back
+  entirely (no "ghost" docs). Generates a one-line description (AI via the chat
+  model when configured, else extractive first paragraph). Available synchronously
+  (`201`) or async (`?background=true` → `202` + a job tracked in `services/jobs.py`,
+  with `ingest`/`graph` events on `WS /stream`).
+- **Conflict detection** (`processing/conflicts.py`): cross-document chunk cosine
+  ≥ 0.92 → `duplicate-of`, ≥ 0.85 → `conflicts-with`; best edge per unordered pair
+  with stable ids. Runs as a batch (`scripts/detect_conflicts.py`) or incrementally
+  for one doc on intake.
+- **Governance** (`governance/`): ACL `Principal` (empty ACL = public, fail-closed),
+  derived node `health`/`importance`, approval with staged-approval for high-risk/
+  low-confidence proposals, append-only provenance, rollback, and `MetricsDTO`.
+- **Verification** (`services/verification.py`): real `docker run --network none`
+  with memory/cpu/pids caps + timeout + output tail; reports `available:false`
+  when Docker is absent (never a fake pass).
 
 ---
 
@@ -238,20 +288,21 @@ chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
 | Drop-off intake (`/documents`) | ✅ Implemented (text only) |
 | Tree, graph, single-document endpoints | ✅ Implemented (graph health/size/accessible are placeholders) |
 | LangGraph Curator (`/chat`) + Curator→Guardian (`/propose`) | ✅ Implemented (Azure default; `CHAT_PROVIDER=fake` offline) |
-| Richer `AgentProposal` (`proposalId`/`sourceDocIds`/`diff`/`evidence`/`verification`) | ✅ Implemented (`verification` null until P4 sandbox) |
+| Richer `AgentProposal` (`proposalId`/`sourceDocIds`/`diff`/`evidence`/`verification`) | ✅ Implemented (`verification` null until sandbox runs) |
 | Offline fake chat provider (`CHAT_PROVIDER=fake`) + no-evidence short-circuit + evidence gate | ✅ Implemented |
-| CLI tooling (`run_ingest`, `load_vectors`, `add_file`, `search`) | ✅ Implemented |
-| **Duplicate/conflict detection** (score ≥ 0.92 / ≥ 0.85 edges) | ❌ Pending |
-| **Node health / freshness scoring** | ❌ Pending (hardcoded `green`) |
-| **Governance: ACL, approval flow, provenance, rollback** | ❌ Pending |
-| **Metrics dashboard + `/metrics`** | ❌ Pending |
-| **Verification sandbox** | ❌ Pending |
-| **WebSocket `/stream`, `/ingest/refresh`, proposal apply** | ❌ Pending |
-| **Frontend shell + graph/chat/intake/provenance/diff UI** | 🟡 Scaffolded (builds; consumes API; demo-mode fixtures) |
+| CLI tooling (`run_ingest`, `load_vectors`, `detect_conflicts`, `add_file`, `search`) | ✅ Implemented |
+| **Duplicate/conflict detection** (score ≥ 0.92 / ≥ 0.85 edges) | ✅ Implemented (batch + incremental on intake) |
+| **Node health / freshness scoring** | ✅ Implemented (`derive_health`/`derive_importance`) |
+| **Governance: ACL, approval flow, provenance, rollback** | ✅ Implemented (mocked `Principal`; append-only audit) |
+| **Metrics dashboard + `/metrics`** | ✅ Backend implemented (`MetricsDTO`); UI panel still on fixtures |
+| **Verification sandbox** | ✅ Real Docker; `available:false` without Docker |
+| **WebSocket `/stream` + async ingest (`202`+job)** | ✅ Implemented; **`/ingest/refresh`** still pending |
+| **Atomic intake + AI/extractive doc summary** | ✅ Implemented (single txn; sidebar tooltip) |
+| **Frontend shell + graph/chat/intake/provenance/diff UI** | 🟡 Scaffolded (builds; live WS refresh; demo-mode fixtures) |
 | **Frontend data layer (`src/lib/types.ts`, `api.ts`, `fixtures.ts`)** | ✅ Implemented (camelCase API mirror + snake→camel client) |
 | **Frontend gates: `npm run lint` (tsc), `npm run test`, `npm run build`** | ✅ Green (8 vitest tests pass) |
 | **Frontend governance panels wired to live endpoints** | ❌ Pending (metrics/approve render from fixtures) |
-| **Dev tooling (backend): ruff/black/pytest + tests** | ❌ Not configured |
+| **Backend tests (pytest)** | ✅ 29 pure-logic tests; ruff/black still not configured |
 
 ---
 
@@ -265,15 +316,18 @@ pip install -r requirements.txt      # Python 3.11+; first run downloads the fas
 # Local pipeline (no Azure needed):
 python -m scripts.run_ingest --all                 # clone -> chunk -> JSONL
 python -m scripts.load_vectors --all               # embed + load into pgvector
+python -m scripts.detect_conflicts --all           # duplicate/conflict edges
 python -m scripts.search "how do I build garnet"   # sanity-check retrieval
+python -m pytest tests -q                          # 29 pure-logic tests
 
 # API:
 uvicorn app.main:app --reload --port 8000          # Swagger at /docs
 
-# Agents (/chat, /propose) use Azure OpenAI by default — set in .env:
+# Agents (/chat, /propose) + AI doc summaries use Azure OpenAI by default — set in .env:
 #   AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_CHAT_DEPLOYMENT
 # ...or run the agents offline with the deterministic fake (no Azure):
 #   $env:CHAT_PROVIDER="fake"   # /chat and /propose then work without Azure
+# The verification sandbox (POST /verify) needs Docker running locally.
 
 # Agent-layer tests (offline; no Azure, no Postgres):
 pip install -r requirements-dev.txt
@@ -306,13 +360,14 @@ When reading the other docs, apply these corrections:
   deterministic `CHAT_PROVIDER=fake` provider for dev/tests/demo.
 - **Agents** are built with **LangGraph**, not a hand-rolled orchestrator loop; the
   `/propose` path has a no-evidence short-circuit and a final deterministic evidence gate.
-- The **API surface** is §4 above (README §8B), not the older §8A.5 table.
-- **Contracts** are snake_case core models + camelCase API DTOs + agent schemas.
-  The frontend now has `frontend/src/lib/types.ts` mirroring the **camelCase** API
-  (README §8B); the API client deep-converts the snake_case `/chat` and `/propose`
-  responses to camelCase. There is still no single frozen camelCase `models/`
-  package on the backend.
-- The **frontend is scaffolded and buildable** (shell, React Flow graph, chat,
-  drop-off intake, provenance + diff panels, metrics strip) with demo-mode
-  fixtures; **governance, metrics, verification, and conflict detection backends**
-  are still the next work, and the panels that depend on them render from fixtures.
+- The **API surface** is §4 above (README §8B): it now includes the governance
+  routes (`/proposals/:id`, approve/rollback, `/metrics`, provenance), `/verify`,
+  async ingest + `/jobs/:id`, and `WS /stream`. Only `/ingest/refresh` is pending.
+- **Contracts** are snake_case core models + camelCase API DTOs + agent schemas +
+  governance contracts. The frontend `frontend/src/lib/types.ts` mirrors the
+  camelCase API; the client and `governance/serialize.py` deep-convert snake→camel.
+  There is still no single frozen camelCase `models/` package on the backend.
+- The **frontend is scaffolded and buildable** and live-refreshes over `WS /stream`;
+  the **governance/metrics/conflict/sandbox backends now exist**. The remaining
+  frontend work is wiring the approve/metrics/provenance panels from fixtures to
+  the live endpoints.
