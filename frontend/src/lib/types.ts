@@ -18,7 +18,8 @@ export type GraphEdgeType =
   | 'duplicate-of'
   | 'conflicts-with'
   | 'deprecated-by'
-  | 'related-to';
+  | 'related-to'
+  | 'sibling';
 
 export interface GraphNode {
   id: string;
@@ -50,6 +51,7 @@ export interface TreeNode {
   name: string;
   type: 'directory' | 'file';
   path: string;
+  summary?: string;
   children?: TreeNode[];
 }
 
@@ -77,6 +79,30 @@ export interface DocumentIntakeResponse {
   docId: string;
   chunks: number;
   edges: number;
+  conflictEdges?: number;
+  summary?: string;
+}
+
+export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
+
+export interface IngestJob {
+  jobId: string;
+  docId: string;
+  status: JobStatus;
+  result?: DocumentIntakeResponse | null;
+  error?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** A tiny event envelope from `WS /stream`. */
+export interface StreamEvent {
+  type: 'connected' | 'heartbeat' | 'ingest' | 'graph' | 'metrics' | 'proposal';
+  jobId?: string;
+  docId?: string;
+  status?: string;
+  error?: string;
+  [k: string]: unknown;
 }
 
 // --------------------------------------------------------------------------- //

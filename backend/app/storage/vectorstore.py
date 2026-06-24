@@ -2,38 +2,54 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
+import psycopg
 from psycopg.rows import dict_row
 
 from app.storage.db import get_conn
 
 
-def upsert_documents(rows: list[dict[str, Any]]) -> int:
-    if not rows:
+def _execmany(sql: str, params: list[dict], conn: Optional[psycopg.Connection]) -> int:
+    """Run an executemany either on a caller-provided connection (no commit, so
+    the caller controls the transaction) or on a fresh self-committing one."""
+    if not params:
         return 0
+    if conn is not None:
+        with conn.cursor() as cur:
+            cur.executemany(sql, params)
+        return len(params)
+    with get_conn() as own:
+        with own.cursor() as cur:
+            cur.executemany(sql, params)
+        own.commit()
+    return len(params)
+
+
+def upsert_documents(rows: list[dict[str, Any]], conn: Optional[psycopg.Connection] = None) -> int:
     sql = """
     INSERT INTO documents (doc_id, repo, path, branch, byte_size, commit_sha,
-                           commit_author, commit_date, content_hash, fetched_at)
+                           commit_author, commit_date, content_hash, fetched_at, summary)
     VALUES (%(doc_id)s, %(repo)s, %(path)s, %(branch)s, %(byte_size)s, %(commit_sha)s,
-            %(commit_author)s, %(commit_date)s, %(content_hash)s, %(fetched_at)s)
+            %(commit_author)s, %(commit_date)s, %(content_hash)s, %(fetched_at)s, %(summary)s)
     ON CONFLICT (doc_id) DO UPDATE SET
         commit_sha = EXCLUDED.commit_sha,
         commit_date = EXCLUDED.commit_date,
         content_hash = EXCLUDED.content_hash,
-        fetched_at = EXCLUDED.fetched_at;
+        fetched_at = EXCLUDED.fetched_at,
+        summary = COALESCE(EXCLUDED.summary, documents.summary);
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(sql, rows)
-        conn.commit()
-    return len(rows)
+    # `summary` is optional for callers (e.g. repo ingest) that don't compute it.
+    rows = [{"summary": None, **r} for r in rows]
+    return _execmany(sql, rows, conn)
 
 
-def upsert_chunks(rows: list[dict[str, Any]], embeddings: list[list[float]]) -> int:
+def upsert_chunks(
+    rows: list[dict[str, Any]],
+    embeddings: list[list[float]],
+    conn: Optional[psycopg.Connection] = None,
+) -> int:
     """Insert chunk rows with their embeddings. `rows` and `embeddings` align by index."""
-    if not rows:
-        return 0
     sql = """
     INSERT INTO chunks (chunk_id, doc_id, repo, heading_path, ordinal, text,
                         token_count, line_start, line_end, contains_commands,
@@ -46,19 +62,11 @@ def upsert_chunks(rows: list[dict[str, Any]], embeddings: list[list[float]]) -> 
         content_hash = EXCLUDED.content_hash,
         embedding = EXCLUDED.embedding;
     """
-    params = []
-    for row, emb in zip(rows, embeddings):
-        params.append({**row, "embedding": emb})
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(sql, params)
-        conn.commit()
-    return len(params)
+    params = [{**row, "embedding": emb} for row, emb in zip(rows, embeddings)]
+    return _execmany(sql, params, conn)
 
 
-def upsert_edges(rows: list[dict[str, Any]]) -> int:
-    if not rows:
-        return 0
+def upsert_edges(rows: list[dict[str, Any]], conn: Optional[psycopg.Connection] = None) -> int:
     sql = """
     INSERT INTO edges (edge_id, from_doc, to_doc, type, weight, reason,
                        anchor_text, line, created_by, commit_sha)
@@ -66,11 +74,7 @@ def upsert_edges(rows: list[dict[str, Any]]) -> int:
             %(anchor_text)s, %(line)s, %(created_by)s, %(commit_sha)s)
     ON CONFLICT (edge_id) DO NOTHING;
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(sql, rows)
-        conn.commit()
-    return len(rows)
+    return _execmany(sql, rows, conn)
 
 
 def search(query_embedding: list[float], top_k: int = 5, repo: str | None = None) -> list[dict]:

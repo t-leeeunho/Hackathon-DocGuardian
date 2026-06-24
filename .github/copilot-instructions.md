@@ -19,12 +19,12 @@ rollback.
 
 ## Golden rules (non-negotiable)
 
-1. **Contracts are coordinated, not assumed.** Today there are three implemented
+1. **Contracts are coordinated, not assumed.** Today there are four implemented
    model layers: snake_case core contracts in `backend/app/models.py`, camelCase
-   API response DTOs in `backend/app/main.py`, and agent structured outputs in
-   `backend/app/agents/schemas.py`. There is no frontend `types.ts` yet. Contract
-   changes require director coordination and must keep the frontend (when built)
-   aligned with the camelCase API responses in README §8B.
+   API response DTOs in `backend/app/main.py`, agent structured outputs in
+   `backend/app/agents/schemas.py`, and the frontend camelCase mirror in
+   `frontend/src/lib/types.ts`. Contract changes require director coordination and
+   must keep all layers aligned with the camelCase API responses in README §8B.
 2. **Stay in your lane, but match the current backend.** The implemented API is
    currently a single `backend/app/main.py` file holding all endpoints, not per-domain
    routers. A future router split is allowed only as a coordinated refactor.
@@ -36,7 +36,7 @@ rollback.
 ## Stack & versions
 
 - **Backend:** Python **3.11+**, FastAPI, Pydantic **v2**.
-- **Frontend (when built):** React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (`@xyflow/react`) 2D graph + Monaco.
+- **Frontend:** React + TypeScript + Vite + Tailwind + React Flow (`@xyflow/react`) 2D graph + Monaco (scaffolded; Radix + lucide, no shadcn/ui yet).
 - **Storage:** PostgreSQL + **pgvector** in one Postgres instance for metadata, graph edges, and vector index; local dev uses `docker compose up -d` with `pgvector/pgvector:pg16`. Azure-ready storage is future work.
 - **Embeddings:** provider-abstracted `EmbeddingProvider`; local fastembed default (`BAAI/bge-small-en-v1.5`, ONNX, 384-dim), swappable to Azure with `EMBEDDING_PROVIDER=azure`.
 - **LLM agents:** LangGraph (`langgraph` + `langchain-openai`) with Azure OpenAI chat required for Curator/Guardian.

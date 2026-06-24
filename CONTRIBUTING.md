@@ -6,9 +6,13 @@ in parallel with Copilot without stepping on each other. For the full plan, read
 For the current implemented backend, read [`docs/implementation-status.md`](docs/implementation-status.md).
 
 > **Status:** backend ingestion → processing → embedding → retrieval → agent API is
-> implemented locally. No frontend exists yet. Governance (ACL, approval,
-> provenance, rollback), metrics, verification sandbox, duplicate/conflict detection,
-> and live WebSocket updates are still planned.
+> implemented locally, plus the **governance slice** (ACL, approval/rollback,
+> append-only provenance, duplicate/conflict detection, derived health, `MetricsDTO`),
+> a **real Docker verification sandbox**, **atomic** drop-off intake with AI/extractive
+> summaries, an **async ingest** path (`202`+job), and a live `WS /stream`. The React
+> frontend is **scaffolded and buildable** (consumes the API, live-refreshes over the
+> WebSocket, demo-mode fixtures). Remaining: wiring the frontend governance panels to
+> live endpoints, `POST /ingest/refresh`, and demo seed data.
 
 ---
 
@@ -17,14 +21,17 @@ For the current implemented backend, read [`docs/implementation-status.md`](docs
 1. **Contracts-first, but match the implemented layers.** Core contracts live as
    snake_case Pydantic models in `backend/app/models.py`; API response DTOs in
    `backend/app/main.py` are camelCase; agent structured outputs live in
-   `backend/app/agents/schemas.py`. There is no frontend `types.ts` yet.
+   `backend/app/agents/schemas.py`; the frontend mirror is
+   `frontend/src/lib/types.ts` (camelCase, README §8B).
 2. **Use the real seams.** Ingestion/search run locally with Postgres + pgvector and
    local fastembed embeddings. `/chat` and `/propose` require Azure OpenAI chat and
    return 503 if Azure is unconfigured; there is no fake/local chat fallback today.
 3. **Stay in your lane while respecting current structure.** Today all endpoints are
-   in `backend/app/main.py`, storage is `backend/app/storage/`, and AI code is split
-   between `backend/app/embeddings/` and `backend/app/agents/`. A per-domain router
-   split can be an intended future convention, but it is not the current layout.
+   in `backend/app/main.py`, storage is `backend/app/storage/`, governance is
+   `backend/app/governance/`, side-effecting services are `backend/app/services/`
+   (verification, events, jobs), and AI code is split between `backend/app/embeddings/`
+   and `backend/app/agents/`. A per-domain router split can be an intended future
+   convention, but it is not the current layout.
 
 ---
 
@@ -56,7 +63,8 @@ code disagree.
 4. **Integrate:** keep Postgres + pgvector as the locked local storage choice; add
    frontend, governance, metrics, verification, and live updates as planned work.
 5. **Demo polish:** seed 1–2 repos with planted stale/duplicate/conflict fixtures,
-   wire metrics/streaming when implemented, accessibility pass, rehearse.
+   wire the frontend governance panels to the live `/metrics`/approve/`WS /stream`
+   endpoints, accessibility pass, rehearse.
 
 Milestones are defined in [`docs/team-plan.md`](docs/team-plan.md) §4, and the
 shared (general) TODOs in §5.
@@ -66,7 +74,8 @@ shared (general) TODOs in §5.
 ## Tech stack
 
 - **Backend:** Python 3.11+, FastAPI, Pydantic v2.
-- **Frontend (when built):** React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (2D) + Monaco.
+- **Frontend:** React + TypeScript + Vite + Tailwind + React Flow (2D) + Monaco
+  (scaffolded; Radix primitives + lucide icons, no shadcn/ui yet).
 - **Storage:** PostgreSQL + pgvector in one Postgres instance for metadata, graph
   edges, and vector index; local dev uses `docker compose up -d` with `pgvector/pgvector:pg16`.
 - **Embeddings:** provider-abstracted; local fastembed default
@@ -88,14 +97,18 @@ docker compose up -d
 pip install -r requirements.txt
 python -m scripts.run_ingest --all
 python -m scripts.load_vectors --all
+python -m scripts.detect_conflicts --all
 python -m scripts.search "how do I build garnet"
+python -m pytest tests -q
 uvicorn app.main:app --reload
 ```
 
 Swagger is available at `/docs` once Uvicorn is running. Azure env
 (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_CHAT_DEPLOYMENT`) is
-only needed for `/chat` and `/propose`; local ingestion, vector loading, search, tree,
-graph, and document endpoints do not require Azure with the default local embedding provider.
+needed for `/chat`, `/propose`, and AI doc summaries; the verification sandbox
+(`POST /verify`) needs Docker running. Local ingestion, vector loading, search, tree,
+graph, governance, and document endpoints do not require Azure with the default local
+embedding provider.
 
 ---
 
@@ -119,12 +132,13 @@ This repo ships Copilot **agents** and **skills** to speed up and standardize th
 
 ## Quality gate (before every PR)
 
-- **Current backend:** no `pyproject.toml`, ruff, black, pytest, or tests are configured.
-  Verify with the implemented CLI/API path: run ingest, load vectors, search, start
+- **Current backend:** `pytest` is configured — run `python -m pytest tests -q`
+  (29 pure-logic tests). ruff/black are not configured yet. Also verify with the
+  implemented CLI/API path: run ingest, load vectors, detect conflicts, search, start
   `uvicorn app.main:app --reload`, and check Swagger at `/docs`.
-- **Frontend:** eslint/tsc/vitest gates apply when the frontend is set up.
-- **Recommended future tooling:** add ruff, black, pytest, and frontend lint/type/test
-  scripts before treating them as mandatory PR gates.
+- **Frontend:** `npm run lint` (tsc), `npm run test` (vitest), `npm run build`.
+- **Recommended future tooling:** add ruff and black before treating them as
+  mandatory PR gates.
 - Cover edge cases (empty results, low confidence, inaccessible docs, unchanged
   content, deleted docs), not just the happy path.
 
@@ -149,7 +163,9 @@ and handles edge cases. See [`docs/team-plan.md`](docs/team-plan.md) §7.
 - **Evidence-or-silence:** no AI answer/edit without supporting chunk IDs + commit
   SHAs + confidence; weak evidence (implemented threshold: ~0.45) ⇒ human review.
   Never invent sources.
-- **Permissions:** enforce ACLs at retrieval, answer, and write when governance is implemented.
-- **Provenance:** every governed write is logged and reversible when governance is implemented.
+- **Permissions:** enforce ACLs at retrieval, answer, and write (implemented in
+  `app/governance/acl.py`; empty ACL = public, fail-closed otherwise).
+- **Provenance:** every governed write is logged append-only and reversible
+  (implemented: approve/rollback write `provenance` rows).
 - **Idempotency:** unchanged `contentHash`/`content_hash` ⇒ no re-processing.
 - **Cost:** ≤2 LLM calls per proposal; deterministic retrieval uses no LLM.

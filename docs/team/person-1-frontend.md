@@ -2,11 +2,18 @@
 
 Own the React UI demo surface: graph, chat, evidence, review, provenance, and metrics that make DocGuardian AI feel grounded, governed, and trustworthy.
 
-> **As-built status (2026-06-23):** the frontend is not started yet, but the backend API it consumes is implemented (README §8B); see [../implementation-status.md](../implementation-status.md).
+> **As-built status (2026-06-24):** the frontend is **scaffolded and buildable**
+> (`frontend/src/lib/{types,api,fixtures}.ts`, hooks incl. `useStream`, and the full
+> component set; `npm run lint`/`test`/`build` green). The backend it consumes is
+> implemented (README §8B) **including** governance, `/metrics`, `/proposals/:id`
+> + approve/rollback, the real verification sandbox, and `WS /stream`. The main
+> remaining work is wiring the governance panels (approve/metrics/provenance) from
+> fixtures to those live endpoints. Many "BLOCKED on P4" items below are now
+> unblocked; see [../implementation-status.md](../implementation-status.md).
 
 ## Mission
 
-Person 1 owns the human-in-the-loop trust surface for DocGuardian AI. The mission is to make the AI's reasoning visible through a polished React experience: graph health, evidence-backed chat, clickable citations, reviewable proposals, provenance, and metrics. The frontend should build directly against the implemented backend API in README §8B with a thin typed client, while optional fixtures can support offline/demo fallback. `WS /stream`, metrics, approval persistence, proposal persistence, and real node-health scoring are not implemented yet, so those surfaces must clearly distinguish live API-backed behavior from pending P4 backend work. This is the demo surface, so clarity, accessibility, motion restraint, and visual polish matter.
+Person 1 owns the human-in-the-loop trust surface for DocGuardian AI. The mission is to make the AI's reasoning visible through a polished React experience: graph health, evidence-backed chat, clickable citations, reviewable proposals, provenance, and metrics. The frontend builds directly against the implemented backend API in README §8B with a thin typed client (`src/lib/api.ts` + `types.ts`), with fixtures for offline/demo fallback. `WS /stream`, `/metrics`, approval/proposal persistence, and node-health scoring are **now implemented** on the backend; the remaining frontend work is wiring the governance panels (approve/metrics/provenance) from fixtures to those live endpoints. This is the demo surface, so clarity, accessibility, motion restraint, and visual polish matter.
 
 ## Scope — What You Own
 
@@ -14,7 +21,7 @@ Person 1 owns the human-in-the-loop trust surface for DocGuardian AI. The missio
 - `frontend/src/components/**` for app shell, graph, chat, drop-off, diff/review, provenance, metrics, and shared UI composition.
 - `frontend/src/hooks/**` for stateful UI logic such as graph selection, highlight lifecycles, API loading states, future WebSocket event handling, and reduced-motion detection.
 - `frontend/src/lib/api.ts` for a thin typed REST client over the real backend endpoints in README §8B; optional local fixtures are acceptable for offline/demo fallback, not as the primary contract source.
-- `frontend/src/lib/ws.ts` may be added for future `WS /stream` support, but the endpoint is not implemented today.
+- `frontend/src/lib/ws.ts` / `hooks/useStream.ts` for `WS /stream` — the endpoint is **implemented** (`useStream.ts` connects with auto-reconnect).
 - `frontend/src/lib/fixtures.ts` may provide local fixture exports that mirror README §8B / implementation-status §4 contracts and let selected UI surfaces run offline.
 - `frontend/src/styles/**`, Tailwind entry styles, theme tokens, and shadcn/ui composition inside owned frontend files.
 - React Flow (`@xyflow/react`) graph layout, rendering, node/edge styling, interaction behaviors, and chunked/lazy rendering strategy.
@@ -23,7 +30,7 @@ Person 1 owns the human-in-the-loop trust surface for DocGuardian AI. The missio
 
 ## What You Must NOT Touch
 
-- There is no `frontend/src/lib/types.ts` yet because the frontend is not started. When created, it should mirror the backend-owned camelCase API responses in README §8B / `docs/implementation-status.md` §4 (`docId`, `chunkId`, `headingPath`, `lineRange`, `commitSha`, `score`, graph `nodes`/`edges`, etc.). After the contract is agreed, do not drift from backend shapes.
+- `frontend/src/lib/types.ts` **exists** and mirrors the backend-owned camelCase API responses in README §8B / `docs/implementation-status.md` §4 (`docId`, `chunkId`, `headingPath`, `lineRange`, `commitSha`, `score`, graph `nodes`/`edges`, etc.). Do not drift from backend shapes.
 - `backend/**` — backend models, routers, services, agents, stores, governance, and API implementation belong to P2/P3/P4/director ownership.
 - `backend/app/models.py`, `backend/app/main.py`, `backend/app/agents/schemas.py`, and storage query DTO shaping — backend contracts and router wiring are owned outside P1.
 - `repos.config.json`, `.env.example`, and root tooling configs unless the director explicitly assigns a frontend setup change during Phase 0.
@@ -37,15 +44,15 @@ Person 1 owns the human-in-the-loop trust surface for DocGuardian AI. The missio
 | `HealthResponse` | `GET /health` is implemented | Backend status, embedding provider, and dimension for a small connectivity/status indicator. |
 | `SearchResponse` | `GET /search?q=&repo=&k=` is implemented | Optional direct search results or chat/retrieval debugging; matches use camelCase fields such as `chunkId`, `docId`, `headingPath`, `lineRange`, `commitSha`, and `score`. |
 | `TreeDTO` | `GET /tree?namespace=` is implemented | Left sidebar source/file tree with nested `{name,type,path,children?}` nodes. |
-| `GraphDTO` | `GET /graph?repo=` is implemented; `health`, `size`, and `accessible` are placeholders today (`green`/~0.5/`true`) until P4 health scoring/ACL work | React Flow nodes and edges; node size from `size`, color from `health`, permission fog from `accessible:false` when real ACL arrives, red dashed `conflicts-with` edges when the backend emits them, lazy cluster rendering. Expect uniform green health in the current API. |
+| `GraphDTO` | `GET /graph?repo=` is implemented with **real** derived `health`/`size` and ACL-filtered `accessible` | React Flow nodes and edges; node size from `size`, color from `health`, permission fog from `accessible:false`, red dashed `conflicts-with` edges, lazy cluster rendering. |
 | `DocumentResponse` | `GET /documents/{docId}` is implemented | Document/provenance-adjacent detail view with `docId`, `repo`, `path`, `commitSha`, `commitDate`, and `chunks[]` for selected nodes. |
-| `DocumentIntakeResponse` | `POST /documents` is implemented for text drop-off | Upload/paste intake result: created `docId`, chunk count, and edge count; binary formats are blocked by the backend with `415`. |
-| `ChatAnswer` | `POST /chat` is implemented; requires Azure OpenAI config or returns `503` | Chat answer text, confidence, `needsHumanReview` badge, optional scope echo, citation chips, and derived `GraphHighlightEvent` instructions from `citations[]`. Citations may use backend/agent naming (`doc_id`/`docId`, `line_range`/`lineRange`, `commit_sha`/`commitSha`, `relevance`), so normalize at the typed adapter boundary. |
-| `AgentProposal` | `POST /propose` is implemented; requires Azure OpenAI config or returns `503` | Proposal/review side panel with `action`, `draft`, `citations`, `confidence`, `risk_level`, `conflicts_with`, `recommendation`, and `guardian_reasoning`. Today it does **not** include a persisted `proposalId`, structured `diff{}`, structured `evidence[]`, or `verification{}`. |
-| `MetricsDTO` | `GET /metrics` is **not implemented** | Metrics dashboard is blocked on pending P4 backend work; fixtures may be used only as clearly labeled demo placeholders. |
-| `GraphHighlightEvent` | Derived client-side from `ChatAnswer.citations[]` and `AgentProposal.citations[]`; `WS /stream` is not implemented | Highlight state consumed by the graph: node glow/pulse, cited `references` edge flowing dash, intensity/relevance scaling, `ttlMs` auto-fade, reduced-motion static halo. |
-| `WS /stream` channel | **Not implemented** | Live graph/health/proposal/metrics updates are blocked on P4; use deterministic local replay only as an offline/demo fallback. |
-| Proposal persistence / approval | `GET /proposals/:id` and `POST /proposals/:id/approve` are **not implemented** | Approve/reject persistence, provenance updates, rollback, and post-approval metrics are blocked on pending P4 backend work. |
+| `DocumentIntakeResponse` | `POST /documents` is implemented (atomic; `?background=true` → `202`+job) | Upload/paste intake result: `docId`, chunk count, edge count, `conflictEdges`, `summary`; binary formats blocked with `415`. |
+| `ChatAnswer` | `POST /chat` is implemented; requires Azure OpenAI config or returns `503` | Chat answer text, confidence, `needsHumanReview` badge, optional scope echo, citation chips, and derived `GraphHighlightEvent` from `citations[]`. The API client normalizes snake→camel (`docId`, `lineRange`, `commitSha`, `relevance`). |
+| `AgentProposal` | `POST /propose` is implemented; persisted to `proposals`; requires Azure or `503` | Proposal/review side panel with `action`, `draft`, `citations`, `confidence`, `riskLevel`, `conflictsWith`, `recommendation`, `guardianReasoning`, plus `proposalId`, `diff{}`, `evidence[]`, and `verification{}` (README §8A.4). |
+| `MetricsDTO` | `GET /metrics` is **implemented** | Metrics dashboard reads live counters; fixtures remain the offline fallback. |
+| `GraphHighlightEvent` | Derived client-side from citations; `WS /stream` is **implemented** for live graph/ingest/metrics/proposal events | Highlight state consumed by the graph: node glow/pulse, cited edge flowing dash, intensity scaling, `ttlMs` auto-fade, reduced-motion static halo. |
+| `WS /stream` channel | **Implemented** (`useStream.ts`) | Live graph/ingest/metrics/proposal updates; offline replay remains the demo fallback. |
+| Proposal persistence / approval | `GET /proposals/:id`, `POST /proposals/:id/approve`, `POST /proposals/:id/rollback` are **implemented** | Approve/reject persistence, provenance, and rollback are live; wire the panel buttons to them. |
 
 Example highlight event shape for planning alignment only:
 
@@ -64,7 +71,7 @@ Example highlight event shape for planning alignment only:
 | Partner | What P1 needs | Interface / contract boundary | When it is needed |
 | --- | --- | --- | --- |
 | Director / Phase 0 driver | Frontend contract examples copied from README §8B / implementation-status §4 and agreed camelCase TypeScript interfaces when `types.ts` is created | `HealthResponse`, `SearchResponse`, `TreeDTO`, `GraphDTO`, `DocumentResponse`, `ChatAnswer`, `AgentProposal`, `GraphHighlightEvent`; backend shapes are authoritative | Phase 0 → **M1** |
-| P2 — Retrieval & Document Intelligence | Real document graph relationships, accessible search results, and eventually meaningful node importance/health inputs | Implemented `GET /search`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`; graph health/size/accessibility placeholders remain a known gap | M1/M2 real API already available; health scoring later |
+| P2 — Retrieval & Document Intelligence | Real document graph relationships, accessible search results, and node importance/health inputs | Implemented `GET /search`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`; `/graph` now serves real derived health/importance + duplicate/conflict edges | available now |
 | P3 — Agent Orchestration & AI Reasoning | Evidence-backed answers and proposals with confidence, citations, relevance, uncertainty, and no-answer/needs-review behavior | Implemented `POST /chat` and `POST /propose`; citation doc IDs must map to graph node IDs for highlighting | M1/M2 real API already available when Azure is configured |
 | P4 — Governance, Verification & Metrics | Metrics, approval, proposal persistence, provenance, ACL/permission flags, real node-health scoring, and WebSocket stream semantics | Pending `GET /metrics`, `GET /proposals/:id`, `POST /proposals/:id/approve`, `WS /stream`, proposal persistence, health scoring | Blocked until P4 backend work lands |
 | Whole team | Seeded demo corpus and planted stale/duplicate/conflict scenarios | Fixtures should be representative, deterministic, demo-script aligned, and clearly marked as fallback where real endpoints are missing | M1 for UI build, M4 for rehearsal |
@@ -81,7 +88,7 @@ Working assumptions:
 
 - [x] **UNBLOCKED:** Confirm the locked frontend stack is scaffolded: React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (`@xyflow/react`) + Monaco Editor, with 2D graph as the MVP and 3D explicitly deferred.
 - [x] **UNBLOCKED:** Create/review frontend TypeScript interfaces for implemented README §8B contracts: `HealthResponse`, `SearchResponse`, `TreeDTO`, `GraphDTO`, `DocumentResponse`, `DocumentIntakeResponse`, `ChatAnswer`, and today's streamlined `AgentProposal`; verify frontend field names mirror real camelCase API responses.
-- [x] **UNBLOCKED:** Create `frontend/src/lib/types.ts` if needed; it does not exist yet, so base it on README §8B / implementation-status §4 instead of assuming a frozen pre-existing file.
+- [x] **DONE:** `frontend/src/lib/types.ts` exists, based on README §8B / implementation-status §4.
 - [x] Create the app shell inside `frontend/src/**`: graph workspace, left/source area if needed, right review/provenance panel area, bottom or side chat, and metrics summary region.
 - [x] Set up Tailwind and shadcn/ui usage patterns for cards, buttons, badges, panels, tabs, scroll areas, dialogs, toasts, and form controls.
 - [x] **UNBLOCKED:** Build `lib/api.ts` against the implemented REST API from README §8B: `GET /health`, `GET /search`, `POST /documents`, `GET /tree`, `GET /graph`, `GET /documents/{docId}`, `POST /chat`, and `POST /propose`.
@@ -216,7 +223,7 @@ Working assumptions:
 - **Conflict edges must remain visually urgent:** red dashed `conflicts-with` edges should not be confused with flowing `references` highlight edges.
 - **Evidence or silence:** answers and proposals without citations/evidence should render as uncertain/needs review, not as confident AI output.
 - **Fixtures and real paths must stay equivalent:** fallback fixtures change data source, not component behavior or payload shape.
-- **Pending endpoints must be honest:** metrics, approve persistence, proposal persistence, `WS /stream`, verification, ACLs, and health scoring are not implemented today; label placeholders and do not imply live behavior.
+- **Pending endpoints must be honest:** the governance backends (metrics, approve/rollback persistence, proposal persistence, `WS /stream`, verification, ACLs, health scoring) are **implemented**; where the UI still renders fixtures, label them clearly until each panel is wired to its live endpoint.
 - **Optimistic UI must reconcile:** approval and metrics can feel instant only after server routes exist; server/WS confirmation is authoritative.
 - **Keep the demo legible:** prefer readable panels, concise labels, meaningful tooltips, and stable layouts over dense dashboards.
 - **Do not leak secrets or restricted data:** avoid logging full document text, private quotes, credentials, or inaccessible content.

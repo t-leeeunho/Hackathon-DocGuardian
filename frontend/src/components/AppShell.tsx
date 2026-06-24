@@ -8,9 +8,10 @@ import { MetricsPanel } from './panels/MetricsPanel';
 import { DropOffArea } from './intake/DropOffArea';
 import { useGraph } from '../hooks/useGraph';
 import { useHighlight } from '../hooks/useHighlight';
+import { useStream } from '../hooks/useStream';
 import { api, ApiError } from '../lib/api';
 import { fixtureProposal } from '../lib/fixtures';
-import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent } from '../lib/types';
+import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent, StreamEvent } from '../lib/types';
 import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X } from 'lucide-react';
 
 export function AppShell() {
@@ -70,6 +71,19 @@ export function AppShell() {
     refreshGraph();
     handleNodeClick(docId);
   }, [refreshGraph, handleNodeClick]);
+
+  // Live updates: refresh the graph when the backend reports an ingest finished,
+  // a graph change, or an approved proposal (README §8B WS /stream).
+  useStream(useCallback((event: StreamEvent) => {
+    if (
+      event.type === 'graph' ||
+      event.type === 'metrics' ||
+      (event.type === 'ingest' && event.status === 'ready') ||
+      event.type === 'proposal'
+    ) {
+      refreshGraph();
+    }
+  }, [refreshGraph]));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', background: '#0d0d12', overflow: 'hidden' }}>

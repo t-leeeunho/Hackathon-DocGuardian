@@ -7,15 +7,19 @@ the processed documents — no embeddings or DB required.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Optional
 
 
-def build_tree(doc_ids: Iterable[str]) -> list[dict[str, Any]]:
+def build_tree(
+    doc_ids: Iterable[str], summaries: Optional[Mapping[str, str]] = None
+) -> list[dict[str, Any]]:
     """Turn flat doc_ids into a nested [{name, type, path, children?}] tree.
 
     Folders sort before files; both alphabetically. The top level is one node
-    per repo (the first path segment).
+    per repo (the first path segment). When ``summaries`` is given, each file node
+    gains a one-line ``summary`` describing what the document is about.
     """
+    summaries = summaries or {}
     root: dict[str, Any] = {}
 
     for doc_id in doc_ids:
@@ -40,6 +44,10 @@ def build_tree(doc_ids: Iterable[str]) -> list[dict[str, Any]]:
             entry = {"name": child["name"], "type": child["type"], "path": child["path"]}
             if child["type"] == "folder":
                 entry["children"] = to_list(child["_children"])
+            else:
+                summary = summaries.get(child["path"])
+                if summary:
+                    entry["summary"] = summary
             items.append(entry)
         items.sort(key=lambda e: (e["type"] == "file", e["name"].lower()))
         return items

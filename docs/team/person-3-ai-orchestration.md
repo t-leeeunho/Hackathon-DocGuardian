@@ -1,6 +1,8 @@
 # Person 3 — Agent Orchestration & AI Reasoning
 
-> **As-built status (2026-06-23):** the LangGraph Curator/Guardian agents are implemented; see [../implementation-status.md](../implementation-status.md).
+> **As-built status (2026-06-24):** the LangGraph Curator/Guardian agents are
+> implemented and `/propose` now persists to the `proposals` table for the
+> governance approval flow; see [../implementation-status.md](../implementation-status.md).
 
 Person 3 owns the reasoning core: a thin deterministic retrieval step plus the only two LLM-backed agents in DocGuardian AI, Curator and Guardian. As built, the thin orchestrator is realized as two compiled LangGraph graphs, not a hand-rolled loop.
 
@@ -105,7 +107,7 @@ Gap/TODO versus README §8A.4: `AgentProposal` does **not** yet include `proposa
 
 | Person | Interface | P3 consumes | P3 produces | M1 / M2 / M3 reality |
 | --- | --- | --- | --- | --- |
-| P1 — Frontend & Demo Experience | API responses and future fixtures | Chat scope/rendering expectations for citations and proposal risk | `ChatAnswer`, `AgentProposal` through `POST /chat` and `POST /propose` in `backend/app/main.py` | M3 backend endpoints exist; frontend is not started. |
+| P1 — Frontend & Demo Experience | API responses and fixtures | Chat scope/rendering expectations for citations and proposal risk | `ChatAnswer`, `AgentProposal` through `POST /chat` and `POST /propose` in `backend/app/main.py` | endpoints exist; frontend is scaffolded. |
 | P2 — Retrieval & Document Intelligence | Retrieval/vector index | pgvector search rows, chunk provenance, scores | Queries and context needs for search | Real retrieval is integrated in `retrieve_node`; duplicate/conflict services are still pending. |
 | P4 — Governance, Verification & Metrics | Future sandbox, ACL, persistence, provenance, approval flow | Not yet wired | Guardian recommendation fields only today | Proposal persistence/apply, sandbox verification, ACL, provenance, and rollback are pending. |
 | Director / shared foundation | Current layout and contracts | `backend/app/models.py`, `backend/app/main.py`, `backend/app/agents/schemas.py` | Contract feedback only unless code ownership changes | Existing contracts are snake_case internally with camelCase API DTOs where needed. |

@@ -20,6 +20,31 @@ def list_doc_ids(namespace: str | None = None) -> list[str]:
             return [r[0] for r in cur.fetchall()]
 
 
+def get_doc_summaries(namespace: str | None = None) -> dict[str, str]:
+    """Map doc_id -> one-line description for the sidebar tree.
+
+    Uses the stored ``summary`` when present, otherwise falls back to the start of
+    the document's first chunk so every file still shows *something* descriptive.
+    """
+    sql = """
+    SELECT d.doc_id,
+           COALESCE(
+               NULLIF(d.summary, ''),
+               (SELECT LEFT(c.text, 160) FROM chunks c
+                WHERE c.doc_id = d.doc_id ORDER BY c.ordinal LIMIT 1)
+           ) AS summary
+    FROM documents d
+    """
+    params: dict = {}
+    if namespace:
+        sql += " WHERE d.doc_id LIKE %(p)s"
+        params["p"] = f"{namespace}/%"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return {r[0]: (r[1] or "") for r in cur.fetchall()}
+
+
 def get_document(doc_id: str) -> dict | None:
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -43,7 +68,7 @@ def get_document(doc_id: str) -> dict | None:
         "repo": doc["repo"],
         "path": doc["path"],
         "commitSha": doc["commit_sha"],
-        "commitDate": doc["commit_date"],
+        "commitDate": doc["commit_date"].isoformat() if doc["commit_date"] else None,
         "chunks": [
             {
                 "chunkId": c["chunk_id"],

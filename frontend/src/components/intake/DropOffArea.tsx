@@ -68,9 +68,20 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
     setError(null);
     setResult(null);
     try {
-      const res = await api.ingestDocument(text, filename || undefined);
-      setResult(res);
-      onIngested?.(res.docId);
+      // Async: return immediately with a job, then poll until terminal so the
+      // user is never blocked on the embed + summarize + conflict pipeline.
+      const job = await api.ingestDocumentAsync(text, filename || undefined);
+      let current = job;
+      while (current.status === 'queued' || current.status === 'processing') {
+        await new Promise((r) => setTimeout(r, 800));
+        current = await api.getJob(job.jobId);
+      }
+      if (current.status === 'succeeded' && current.result) {
+        setResult(current.result);
+        onIngested?.(current.result.docId);
+      } else {
+        setError(current.error || 'Ingestion failed and was rolled back.');
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 415) {
         setError('Unsupported file format — text/markdown only.');

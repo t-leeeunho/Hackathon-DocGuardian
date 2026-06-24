@@ -100,8 +100,10 @@ def curator_chat_node(state: AgentState) -> AgentState:
     # Short-circuit: no usable evidence -> explicit "needs human review" (no LLM cost).
     if not rows or top_score < WEAK_EVIDENCE_THRESHOLD:
         answer = ChatAnswer(
-            answer="I'm not sure. The available documentation does not clearly answer "
-            "this. This needs human review.",
+            answer="I'm DocGuardian's documentation assistant, so I answer only from the "
+            "indexed docs — and I couldn't find evidence for that. Try asking about a "
+            "specific project's setup, build, configuration, or APIs (e.g. \"How do I "
+            "build Garnet from source?\").",
             citations=_citations_from_rows(rows[:3]),
             confidence=round(float(top_score), 2),
             needs_human_review=True,

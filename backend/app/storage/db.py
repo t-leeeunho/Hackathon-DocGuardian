@@ -75,6 +75,55 @@ def init_schema(dim: int) -> None:
     CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo);
     CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_doc);
     CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_doc);
+
+    -- Governance fields on documents (idempotent; added after the base schema
+    -- so existing deployments upgrade in place). README Section 8A DocumentRecord.
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS owner             TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS title             TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS acl               TEXT[] DEFAULT '{{}}';
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS health            TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS importance        REAL;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_verified_sha TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_verified_at  TIMESTAMPTZ;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMPTZ;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary           TEXT;
+
+    -- Persisted agent proposals (README Section 8A.4 AgentProposal). The full
+    -- agent payload is kept in `payload` (snake_case JSON); indexed columns
+    -- drive lookups, status transitions, and metrics.
+    CREATE TABLE IF NOT EXISTS proposals (
+        proposal_id  TEXT PRIMARY KEY,
+        doc_id       TEXT,
+        action       TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'proposed',
+        risk_level   TEXT,
+        confidence   REAL,
+        payload      JSONB NOT NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        applied_at   TIMESTAMPTZ
+    );
+
+    -- Append-only audit log. Historical rows are never updated or deleted;
+    -- a rollback writes a NEW entry that references the prior one.
+    CREATE TABLE IF NOT EXISTS provenance (
+        entry_id             TEXT PRIMARY KEY,
+        doc_id               TEXT,
+        proposal_id          TEXT,
+        action               TEXT NOT NULL,
+        approved_by          TEXT NOT NULL,
+        approved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+        previous_version_ref TEXT,
+        new_version_ref      TEXT,
+        evidence_snapshot    JSONB DEFAULT '[]',
+        confidence           REAL,
+        reason               TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+    CREATE INDEX IF NOT EXISTS idx_proposals_doc ON proposals(doc_id);
+    CREATE INDEX IF NOT EXISTS idx_provenance_doc ON provenance(doc_id);
+    CREATE INDEX IF NOT EXISTS idx_provenance_proposal ON provenance(proposal_id);
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
