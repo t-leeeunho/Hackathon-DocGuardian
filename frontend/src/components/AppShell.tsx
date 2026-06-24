@@ -47,8 +47,14 @@ export function AppShell() {
     setProposalLoading(true);
     setShowProposal(true);
     setProposal(null);
+    // docId is "<repoShortName>/<path>" — scope retrieval to that repo and name the
+    // doc so the Curator/Guardian proposal is about THIS document, not the whole corpus.
+    const repo = docId.includes('/') ? docId.split('/')[0] : undefined;
+    const instruction =
+      `Review "${docId}" for staleness, duplication, and conflicts with related ` +
+      `documentation, and propose a single concrete fix.`;
     try {
-      const result = await api.propose(docId, 'Review this document for staleness and conflicts.');
+      const result = await api.propose(docId, instruction, repo);
       setProposal(result);
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
