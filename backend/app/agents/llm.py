@@ -71,17 +71,21 @@ def _azure_chat_llm(temperature: float):
 def get_chat_llm(temperature: float = 0.1):
     """Return the active chat model.
 
-    With ``CHAT_PROVIDER=azure`` (default) returns a cached ``AzureChatOpenAI`` and
-    raises ``AzureNotConfiguredError`` when the env is missing. With
-    ``CHAT_PROVIDER=fake`` returns a deterministic offline ``FakeChatLLM``.
+    ``CHAT_PROVIDER`` selects the backend:
+    - ``azure`` (default) — cached ``AzureChatOpenAI``; raises
+      ``AzureNotConfiguredError`` (→ HTTP 503) when the env is missing.
+    - ``fake`` — deterministic offline ``FakeChatLLM``.
+    - ``auto`` — Azure if configured, otherwise the fake (handy for local dev).
     """
     provider = chat_provider()
+    if provider == "auto":
+        provider = "azure" if azure_is_configured() else "fake"
     if provider == "fake":
         return FakeChatLLM(temperature=temperature)
     if provider in ("", "azure"):
         return _azure_chat_llm(temperature)
     raise AzureNotConfiguredError(
-        f"Unknown CHAT_PROVIDER={provider!r}; expected 'azure' or 'fake'."
+        f"Unknown CHAT_PROVIDER={provider!r}; expected 'azure', 'fake', or 'auto'."
     )
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import warnings
 from datetime import datetime, timezone
 from typing import Any, Optional, TypedDict
 
@@ -70,13 +71,18 @@ def _format_sources(rows: list[dict]) -> str:
     return "\n\n".join(blocks) if blocks else "(no sources found)"
 
 
+def _clamp01(x: float) -> float:
+    """Clamp a raw score into [0, 1] — cosine similarity can be slightly negative."""
+    return max(0.0, min(1.0, float(x)))
+
+
 def _citations_from_rows(rows: list[dict]) -> list[Citation]:
     return [
         Citation(
             doc_id=r["doc_id"],
             line_range=[r["line_start"], r["line_end"]],
             commit_sha=r.get("commit_sha", ""),
-            relevance=round(float(r["score"]), 4),
+            relevance=round(_clamp01(r["score"]), 4),
         )
         for r in rows
     ]
@@ -112,7 +118,7 @@ def _evidence_from_rows(rows: list[dict]) -> list[Evidence]:
             commit_sha=r.get("commit_sha", ""),
             line_range=[r["line_start"], r["line_end"]],
             quote=r["text"][:240].strip(),
-            relevance=round(float(r["score"]), 4),
+            relevance=round(_clamp01(r["score"]), 4),
         )
         for r in rows[:MAX_EVIDENCE]
     ]
@@ -130,7 +136,7 @@ def _unique_source_doc_ids(citations: list[Citation], target_doc_id: str | None)
 
 def _build_diff(
     draft: CuratorDraft, rows: list[dict], citations: list[Citation]
-) -> ProposalDiff | None:
+) -> ProposalDiff:
     """Prefer the model's explicit before/after; otherwise synthesize one."""
     if draft.diff and (draft.diff.before or draft.diff.after):
         diff = draft.diff
@@ -182,9 +188,53 @@ def _ground_chat_citations(answer: ChatAnswer, rows: list[dict]) -> ChatAnswer:
         if model_cited:  # it cited only non-retrieved docs -> do not trust the answer
             answer.needs_human_review = True
     answer.citations = _enrich_citations(grounded, rows)
+    # Provenance: an answer with no commit-SHA-backed citation isn't trustworthy
+    # (mirrors _finalize_proposal; intake/user-upload docs carry no commit SHA).
+    if not any(c.commit_sha for c in answer.citations):
+        answer.needs_human_review = True
     if answer.confidence < LOW_CONFIDENCE_THRESHOLD:
         answer.needs_human_review = True
     return answer
+
+
+def _safe_invoke(runnable: Any, prompt: str) -> Any | None:
+    """Invoke an LLM structured-output runnable; return None on any model error.
+
+    Lets a node fail **closed** to the deterministic "needs human review" path
+    instead of surfacing a 500 when the model errors (rate limit, content filter,
+    invalid JSON). The scoped filter silences a benign LangChain/Pydantic
+    structured-output serializer warning so demo logs stay clean.
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.main")
+            return runnable.invoke(prompt)
+    except Exception:  # noqa: BLE001 - any model failure must fail closed to human review
+        return None
+
+
+def _model_error_proposal(rows: list[dict]) -> dict[str, Any]:
+    """Deterministic needs-review proposal used when the Curator LLM call fails."""
+    return AgentProposal(
+        proposal_id=_proposal_id(),
+        action="flag",
+        target_doc_id=None,
+        source_doc_ids=[],
+        diff=None,
+        draft="The drafting model was unavailable, so no change was generated. "
+        "Flagging for human review.",
+        citations=_enrich_citations(_citations_from_rows(rows[:3]), rows),
+        evidence=_evidence_from_rows(rows),
+        confidence=0.0,
+        risk_level="high",
+        conflicts_with=[],
+        verification=None,
+        recommendation="needs-review",
+        uncertainty="The Curator model call failed; defaulting to human review "
+        "(no draft was produced).",
+        proposed_by="orchestrator",
+        created_at=_utcnow_iso(),
+    ).model_dump()
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +269,7 @@ def curator_chat_node(state: AgentState) -> AgentState:
             answer="I'm not sure. The available documentation does not clearly answer "
             "this. This needs human review.",
             citations=_citations_from_rows(rows[:3]),
-            confidence=round(float(top_score), 2),
+            confidence=round(_clamp01(top_score), 2),
             needs_human_review=True,
         )
         return {"chat_answer": answer.model_dump()}
@@ -230,7 +280,17 @@ def curator_chat_node(state: AgentState) -> AgentState:
         f"QUESTION:\n{state['query']}\n\n"
         f"SOURCES:\n{_format_sources(rows)}"
     )
-    answer: ChatAnswer = llm.invoke(prompt)
+    answer = _safe_invoke(llm, prompt)
+    if answer is None:
+        # Model failed — fail closed to an explicit human-review answer.
+        fallback = ChatAnswer(
+            answer="I couldn't produce a verified answer from the documentation. "
+            "This needs human review.",
+            citations=_enrich_citations(_citations_from_rows(rows[:3]), rows),
+            confidence=0.0,
+            needs_human_review=True,
+        )
+        return {"chat_answer": fallback.model_dump()}
     # Evidence-or-silence: drop ungrounded citations, force review when unsupported.
     answer = _ground_chat_citations(answer, rows)
     return {"chat_answer": answer.model_dump()}
@@ -299,7 +359,10 @@ def curator_draft_node(state: AgentState) -> AgentState:
         f"INSTRUCTION:\n{state.get('instruction', state['query'])}\n\n"
         f"SOURCES:\n{_format_sources(rows)}"
     )
-    draft: CuratorDraft = llm.invoke(prompt)
+    draft = _safe_invoke(llm, prompt)
+    if draft is None:
+        # Curator failed — emit a deterministic needs-review flag proposal.
+        return {"proposal": _model_error_proposal(rows)}
 
     # Ground citations in real retrieved rows and force authoritative commit SHAs.
     citations = draft.citations or _citations_from_rows(rows[:3])
@@ -338,6 +401,13 @@ def _guardian_view(proposal: dict[str, Any]) -> str:
 def guardian_node(state: AgentState) -> AgentState:
     curator_proposal = state["proposal"]
     rows = state.get("retrieved", [])
+
+    # If the Curator emitted a deterministic fallback (e.g. a model error), do not
+    # spend a Guardian call or let it "approve" a non-draft — it is already
+    # needs-review. (no_evidence proposals never reach this node.)
+    if curator_proposal.get("proposed_by") == "orchestrator":
+        return {"proposal": _finalize_proposal(curator_proposal)}
+
     llm = get_chat_llm(temperature=0.0).with_structured_output(GuardianReview)
     prompt = (
         f"{GUARDIAN_SYSTEM}\n\n"
@@ -346,7 +416,16 @@ def guardian_node(state: AgentState) -> AgentState:
         "Judge the change: set recommendation, guardian_reasoning, a calibrated "
         "confidence, risk_level, and any uncertainty."
     )
-    review: GuardianReview = llm.invoke(prompt)
+    review = _safe_invoke(llm, prompt)
+    if review is None:
+        # Guardian failed — preserve the Curator's grounded draft, default to review.
+        merged = {
+            **curator_proposal,
+            "recommendation": "needs-review",
+            "guardian_reasoning": "Guardian review was unavailable (model error); "
+            "defaulting to human review.",
+        }
+        return {"proposal": _finalize_proposal(merged)}
 
     # The Guardian only contributes its JUDGMENT. Preserve the Curator's draft and
     # evidence-grounded citations (the LLM may otherwise hallucinate, e.g. commit SHAs).
@@ -354,7 +433,9 @@ def guardian_node(state: AgentState) -> AgentState:
         **curator_proposal,
         "recommendation": review.recommendation or "needs-review",
         "guardian_reasoning": review.guardian_reasoning,
-        "confidence": review.confidence,
+        "confidence": min(
+            float(curator_proposal.get("confidence") or 0.0), float(review.confidence)
+        ),
         "risk_level": review.risk_level,
         "conflicts_with": review.conflicts_with or curator_proposal.get("conflicts_with", []),
         "uncertainty": review.uncertainty,
@@ -373,7 +454,7 @@ def _route_after_retrieve(state: AgentState) -> str:
 def no_evidence_proposal_node(state: AgentState) -> AgentState:
     """Short-circuit weak/empty retrieval into a needs-review proposal — no LLM cost."""
     rows = state.get("retrieved", [])
-    top = round(float(max((r["score"] for r in rows), default=0.0)), 2)
+    top = round(_clamp01(max((r["score"] for r in rows), default=0.0)), 2)
     proposal = AgentProposal(
         proposal_id=_proposal_id(),
         action="flag",

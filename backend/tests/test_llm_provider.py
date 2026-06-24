@@ -62,6 +62,12 @@ def test_azure_is_configured_reflects_env(monkeypatch):
     assert llm.azure_is_configured() is False
 
 
+def test_chat_provider_normalizes_case_and_whitespace(monkeypatch):
+    monkeypatch.setenv("CHAT_PROVIDER", "  FAKE ")
+    assert llm.chat_provider() == "fake"
+    assert isinstance(llm.get_chat_llm(), llm.FakeChatLLM)
+
+
 # --- fake determinism + schema validity --------------------------------------
 def test_fake_chat_answer_is_deterministic_and_valid():
     runnable = llm.FakeChatLLM().with_structured_output(ChatAnswer)

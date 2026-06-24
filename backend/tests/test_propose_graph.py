@@ -47,3 +47,12 @@ def test_weak_evidence_short_circuits_before_any_llm(patch_retrieval):
     p = run_propose("merge the build docs")
     assert p["proposed_by"] == "orchestrator"
     assert p["recommendation"] == "needs-review"
+
+
+def test_guardian_preserves_curator_draft_and_citations(patch_retrieval, rows_strong):
+    # Guardian contributes only judgment; the Curator's draft + grounded citations survive.
+    patch_retrieval(rows_strong)
+    p = run_propose("Unify the build docs into one canonical doc", repo="vscode")
+    assert p["draft"].startswith("## Proposed")
+    assert [c["doc_id"] for c in p["citations"]] == ["vscode/build.md", "vscode/contributing.md"]
+    assert all(c["commit_sha"] for c in p["citations"])
