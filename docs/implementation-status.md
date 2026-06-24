@@ -142,7 +142,8 @@ There are **three layers** of models — not one frozen camelCase package:
 ## 6. Agent Design (as built — LangGraph)
 
 Two compiled LangGraph graphs share one deterministic retrieval node + the two
-chat agents (Azure by default, or the offline fake via `CHAT_PROVIDER=fake`):
+chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
+`CHAT_PROVIDER=auto` = Azure-if-configured-else-fake):
 
 - `/chat`: `retrieve → curator` → `ChatAnswer` (**1 LLM call**).
 - `/propose`: `retrieve → {curator(draft) → guardian(review) | no_evidence}` →
@@ -160,7 +161,16 @@ chat agents (Azure by default, or the offline fake via `CHAT_PROVIDER=fake`):
   floor — regardless of what the Guardian returned.
 - Guardian contributes only its judgment (`recommendation`, `guardian_reasoning`,
   `confidence`, `risk_level`, `conflicts_with`, `uncertainty`); the Curator's draft
-  and grounded citations are preserved.
+  and grounded citations are preserved. The merged proposal confidence is
+  `min(curator, guardian)` so a thin draft can't bypass the review gate.
+- Chat has a symmetric gate (`_ground_chat_citations`): it drops citations to
+  non-retrieved docs and forces `needs_human_review` when no citation carries a
+  commit SHA or confidence is below the floor.
+- **Fail-closed**: `_safe_invoke` wraps every model call, so a throwing or
+  `None`-returning LLM degrades to a deterministic needs-review answer/proposal
+  (HTTP 500 avoided); a Guardian failure preserves the Curator's draft.
+- Raw cosine scores (which are in `[-1, 1]`) are clamped to `[0, 1]` before they
+  become `relevance`/`confidence`, so a negative-similarity tail row can't raise.
 
 ---
 
