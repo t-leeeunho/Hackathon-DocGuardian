@@ -917,6 +917,183 @@ USER (Frontend)        BACKEND API      ORCHESTRATOR+CURATOR/GUARDIAN  VECTOR IN
 
 ---
 
+## 8B. Backend API Reference (for LangChain Integration)
+
+This section is the concrete contract for anyone building on top of the backend
+(e.g. the LangChain retrieval/agent pipeline). Base URL for local dev:
+`http://localhost:8000`. All request/response bodies are JSON.
+
+**Implementation status (2026-06-23):** the retrieval, intake, tree, and graph
+logic already exists and is verified locally via CLI scripts
+(`scripts/search.py`, `scripts/add_file.py`, `scripts/load_vectors.py`,
+`app/tree.py`). These HTTP endpoints are the thin FastAPI wrapper over that
+logic. Field names below match the actual data the code produces.
+
+### 8B.1 `GET /health`
+
+Liveness probe.
+
+```jsonc
+// 200 OK
+{ "status": "ok", "embeddingProvider": "local:BAAI/bge-small-en-v1.5", "dim": 384 }
+```
+
+### 8B.2 `GET /search` — semantic retrieval (the LangChain retriever target)
+
+The primary endpoint a LangChain retriever calls. Backed by pgvector cosine
+similarity over embedded chunks.
+
+Query params:
+
+| Param | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `q` | string | yes | — | natural-language query |
+| `repo` | string | no | all | shortName filter: `garnet` \| `playwright` \| `onnxruntime` \| `vscode` \| `user` |
+| `k` | int | no | 5 | number of results |
+
+```jsonc
+// GET /search?q=how%20do%20I%20build%20garnet&repo=garnet&k=3  -> 200 OK
+{
+  "query": "how do I build garnet",
+  "matches": [
+    {
+      "chunkId": "garnet/website/docs/getting-started/build.md#build-the-project#0",
+      "docId":   "garnet/website/docs/getting-started/build.md",
+      "repo":    "microsoft/garnet",
+      "headingPath": ["Build the Project"],
+      "text": "## Build the Project Make sure .NET 10 SDK is installed ...",
+      "lineRange": [16, 25],
+      "commitSha": "9f1b6c6fd42acec0c884eaa2ba7969ed7f979b93",
+      "score": 0.815          // cosine similarity in [0,1], higher = closer
+    }
+  ]
+}
+```
+
+### 8B.3 `POST /documents` — drop-off intake (upload or paste)
+
+Adds a user document; it is chunked, embedded into pgvector, registered in the
+tree, and its links become graph edges (lands under the `user/` namespace).
+
+```jsonc
+// POST /documents
+{ "name": "redis-migration.md", "content": "# Redis Migration\n..." }
+
+// 201 Created
+{ "docId": "user/redis-migration.md", "chunks": 2, "edges": 0 }
+```
+
+Text formats supported today: `.md`, `.mdx`, `.markdown`, `.txt`, `.rst`, or
+pasted text. Binary formats (PDF/DOCX) return `415 Unsupported Media Type`.
+
+### 8B.4 `GET /tree` — file-system tree (left sidebar)
+
+Nested folder/file structure derived from `docId`s.
+
+Query params: `namespace` (optional; e.g. `garnet` or `user`; omit for all).
+
+```jsonc
+// GET /tree?namespace=user  -> 200 OK
+[
+  {
+    "name": "user",
+    "type": "folder",
+    "path": "user",
+    "children": [
+      { "name": "redis-migration.md", "type": "file", "path": "user/redis-migration.md" }
+    ]
+  }
+]
+```
+
+### 8B.5 `GET /graph` — nodes + edges (graph view)
+
+Query params: `repo` (optional shortName filter).
+
+```jsonc
+// GET /graph?repo=garnet  -> 200 OK  (GraphDTO, see Section 8A.6)
+{
+  "nodes": [
+    { "id": "garnet/website/docs/welcome/intro.md", "label": "intro.md",
+      "health": "green", "size": 0.6, "accessible": true, "repo": "microsoft/garnet" }
+  ],
+  "edges": [
+    { "from": "garnet/website/docs/welcome/intro.md",
+      "to": "garnet/website/docs/welcome/features.md",
+      "type": "references", "weight": 1.0 }
+  ]
+}
+```
+
+### 8B.6 `GET /documents/{docId}` — single document + its chunks
+
+```jsonc
+// GET /documents/garnet/website/docs/getting-started/build.md  -> 200 OK
+{
+  "docId": "garnet/website/docs/getting-started/build.md",
+  "repo": "microsoft/garnet",
+  "path": "website/docs/getting-started/build.md",
+  "commitSha": "9f1b6c6f...",
+  "commitDate": "2026-06-23T12:00:36-07:00",
+  "chunks": [
+    { "chunkId": "...#clone-from-sources#0", "headingPath": ["Clone from Sources"],
+      "lineRange": [8, 14], "text": "## Clone from Sources ..." }
+  ]
+}
+```
+
+### 8B.7 LangChain integration pattern
+
+The backend owns **retrieval + data**; the LangChain pipeline owns **reasoning**
+(the Curator and Guardian agents from Section 8.2). Wire `/search` as a custom
+retriever:
+
+```python
+import requests
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+
+class DocGuardianRetriever(BaseRetriever):
+    base_url: str = "http://localhost:8000"
+    repo: str | None = None
+    k: int = 5
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> list[Document]:
+        params = {"q": query, "k": self.k}
+        if self.repo:
+            params["repo"] = self.repo
+        matches = requests.get(f"{self.base_url}/search", params=params, timeout=30).json()["matches"]
+        return [
+            Document(
+                page_content=m["text"],
+                metadata={
+                    "doc_id": m["docId"],
+                    "repo": m["repo"],
+                    "heading_path": m["headingPath"],
+                    "line_range": m["lineRange"],
+                    "commit_sha": m["commitSha"],   # for the verification stamp
+                    "score": m["score"],
+                },
+            )
+            for m in matches
+        ]
+```
+
+Notes for the pipeline:
+
+- **Citation enforcement (Section 6.3):** every retrieved `Document` carries
+  `doc_id`, `line_range`, and `commit_sha` in metadata — pass these straight
+  through so answers/edits can cite exact source lines (this is what drives the
+  frontend node-blink in Section 8A.6.1).
+- **Confidence + uncertainty (Section 6.4):** if the top `score` is below ~0.5
+  or no matches are returned, the pipeline should emit the explicit
+  "needs human review" response rather than guess.
+- **Scope toggle (Section 7.7):** map the UI scope to the `repo` query param.
+- **Two-agent flow (Section 8.2):** Curator drafts using these retrieved docs;
+  Guardian reviews. Aim for ~2 LLM calls per proposal to respect the student plan.
+
+---
+
 ## 9. Data Sources
 
 DocGuardian AI can use multiple data sources depending on permissions and integration availability.

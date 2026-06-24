@@ -10,3 +10,14 @@ uvicorn[standard]>=0.29
 # Storage (Postgres + pgvector) — used once the DB is wired up
 psycopg[binary]>=3.1
 pgvector>=0.2.5
+
+# Embeddings
+# Local default: fastembed (ONNX Runtime, no PyTorch). Swap to Azure via env.
+fastembed>=0.3
+# Azure OpenAI provider (only used when EMBEDDING_PROVIDER=azure)
+openai>=1.30
+
+# Agents (LangGraph Curator/Guardian + Azure OpenAI chat)
+langgraph>=0.2
+langchain-openai>=0.1
+langchain-core>=0.3
