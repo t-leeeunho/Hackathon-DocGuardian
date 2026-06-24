@@ -88,6 +88,9 @@ Answer the user's question USING ONLY the provided documentation sources.
 Rules:
 - Cite the doc_id and line range of every source you use.
 - Give a confidence score in [0,1].
+- In `reasoning`, give a brief trace (1-3 short sentences) of HOW you derived the
+  answer from the sources, e.g. "From [1] I inferred the clone step; from [2] the
+  .NET build command." Keep it concise.
 - If the sources do not actually answer the question, set needs_human_review to
   true and say you are not sure rather than guessing.
 Be concise and engineering-accurate."""
@@ -104,6 +107,8 @@ def curator_chat_node(state: AgentState) -> AgentState:
             "indexed docs — and I couldn't find evidence for that. Try asking about a "
             "specific project's setup, build, configuration, or APIs (e.g. \"How do I "
             "build Garnet from source?\").",
+            reasoning="No retrieved source scored above the evidence threshold, so I "
+            "declined to answer rather than guess.",
             citations=_citations_from_rows(rows[:3]),
             confidence=round(float(top_score), 2),
             needs_human_review=True,

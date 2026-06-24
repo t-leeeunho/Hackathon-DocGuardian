@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, AlertTriangle, MessageSquare, Zap } from 'lucide-react';
+import { Send, AlertTriangle, MessageSquare, Zap, Sparkles, Brain } from 'lucide-react';
 import { CitationChip } from './CitationChip';
 import { ScopeToggle } from './ScopeToggle';
 import { useChat } from '../../hooks/useChat';
-import type { GraphHighlightEvent, Citation } from '../../lib/types';
+import type { GraphHighlightEvent, Citation, ChatAnswer } from '../../lib/types';
 
 interface ChatPanelProps {
   onHighlight: (event: GraphHighlightEvent) => void;
@@ -62,6 +62,7 @@ function LoadingSkeleton() {
 
 export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPanelProps) {
   const [input, setInput] = useState('');
+  const [openTraces, setOpenTraces] = useState<Record<string, boolean>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const { messages, scope, setScope, loading, sendMessage, citationHighlight } = useChat(
     onHighlight,
@@ -89,6 +90,23 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
   const handleCitationClick = (citation: Citation) => {
     citationHighlight(citation);
     onCitationClick?.(citation);
+  };
+
+  // Re-blink the cited nodes AND fly the camera there (only on Show traces).
+  const replayTraces = (answer: ChatAnswer) => {
+    if (!answer.citations.length) return;
+    onHighlight({
+      reason: 'chat-evidence',
+      nodeIds: [...new Set(answer.citations.map((c) => c.docId))],
+      intensity: Math.max(...answer.citations.map((c) => c.relevance)),
+      ttlMs: 8000,
+      focus: true,
+    });
+  };
+
+  const toggleTraces = (id: string, answer: ChatAnswer) => {
+    setOpenTraces((prev) => ({ ...prev, [id]: !prev[id] }));
+    replayTraces(answer); // always re-blink when clicked
   };
 
   return (
@@ -280,7 +298,39 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
                           {msg.answer.scope}
                         </span>
                       )}
+                      {msg.answer.citations.length > 0 && (
+                        <button
+                          onClick={() => toggleTraces(msg.id, msg.answer!)}
+                          style={{
+                            marginLeft: 'auto',
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+                            fontSize: 11, fontWeight: 600, color: '#c4b5fd',
+                            background: 'rgba(139,92,246,0.14)',
+                            border: '1px solid rgba(139,92,246,0.3)',
+                          }}
+                        >
+                          <Sparkles size={11} />
+                          {openTraces[msg.id] ? 'Hide traces' : 'Show traces'}
+                        </button>
+                      )}
                     </div>
+
+                    {/* Reasoning trace ("how I derived this") */}
+                    {openTraces[msg.id] && msg.answer.reasoning && (
+                      <div
+                        style={{
+                          display: 'flex', gap: 8, alignItems: 'flex-start',
+                          padding: '8px 10px', borderRadius: 8,
+                          background: 'rgba(139,92,246,0.06)',
+                          border: '1px solid rgba(139,92,246,0.18)',
+                          fontSize: 12, color: '#c4b5fd', lineHeight: 1.55,
+                        }}
+                      >
+                        <Brain size={13} style={{ flexShrink: 0, marginTop: 1, color: '#a78bfa' }} />
+                        <span><strong style={{ color: '#a78bfa' }}>Reasoning:</strong> {msg.answer.reasoning}</span>
+                      </div>
+                    )}
 
                     {/* Citations */}
                     {msg.answer.citations.length > 0 && (
@@ -309,6 +359,20 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
                         </div>
                       </div>
                     )}
+                  </div>
+                ) : msg.content ? (
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '2px 12px 12px 12px',
+                      border: '1px solid rgba(139,92,246,0.1)',
+                      fontSize: 13,
+                      lineHeight: 1.55,
+                      color: '#cbd5e1',
+                    }}
+                  >
+                    {msg.content}
                   </div>
                 ) : null}
               </div>

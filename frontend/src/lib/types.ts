@@ -120,6 +120,7 @@ export interface Citation {
 export interface ChatAnswer {
   answer: string;
   scope?: string;
+  reasoning?: string;
   citations: Citation[];
   confidence: number;
   needsHumanReview: boolean;
@@ -205,4 +206,6 @@ export interface GraphHighlightEvent {
   intensity: number;
   /** How long the highlight stays before auto-clearing, in ms. */
   ttlMs: number;
+  /** When true, the graph also flies the camera to the highlighted node(s). */
+  focus?: boolean;
 }

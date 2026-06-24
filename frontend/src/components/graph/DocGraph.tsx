@@ -36,15 +36,19 @@ const REPO_PALETTE = [
   '#60a5fa', '#22d3ee', '#a78bfa', '#f472b6',
   '#34d399', '#fbbf24', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9',
 ];
-const CONFLICT_COLOR = '#ef4444';
 const HIGHLIGHT_COLOR = '#ffffff';
+// Every normal doc is a calm grey that stays *below* the bloom threshold, so it
+// doesn't glow. Conflicts are shown as red *edges* between docs (a field of red
+// nodes looked unpleasant). Only a cited/searched node turns bright white and
+// blooms — that's the "shine" when a question references it.
+const GENERIC_COLOR = '#94a3b8';
 
 const LINK_COLOR: Record<string, string> = {
-  'conflicts-with': '#f87171',
-  'duplicate-of': '#fb923c',
-  'deprecated-by': '#9ca3af',
-  sibling: 'rgba(148,163,184,0.35)',
-  references: 'rgba(148,163,184,0.55)',
+  'conflicts-with': '#ef4444',
+  'duplicate-of': '#f97316',
+  'deprecated-by': '#64748b',
+  sibling: '#64748b',
+  references: '#64748b',
 };
 
 // react-force-graph hands callbacks its internal node/link objects; cast to ours.
@@ -68,6 +72,31 @@ function spherePoint(radius: number): Vec3 {
   };
 }
 
+// A floating text tag (project name) rendered as a three.js sprite.
+function makeLabelSprite(text: string, color: string): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+  const font = '700 64px Inter, system-ui, sans-serif';
+  ctx.font = font;
+  const pad = 30;
+  canvas.width = Math.ceil(ctx.measureText(text).width + pad * 2);
+  canvas.height = 64 + pad * 2;
+  ctx.font = font; // resizing the canvas resets the context
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(8,8,14,0.55)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = color;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  const worldW = 260;
+  const scale = worldW / canvas.width;
+  sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+  return sprite;
+}
+
 export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
@@ -79,37 +108,44 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
   const highlightRef = useRef(highlight);
   highlightRef.current = highlight;
 
-  // Build graph data only when the document set changes. Each project's nodes are
-  // placed inside their own 3D ball (and the layout is frozen) so every project
-  // reads as a clean round sphere instead of a stringy force-stretched mess.
-  const graphData = useMemo(() => {
+  // One labelled, well-separated 3D ball per project.
+  const clusters = useMemo(() => {
     const repos = [...new Set(data.nodes.map((n) => n.repo))].sort();
-    const repoColor: Record<string, string> = {};
-    const centers: Record<string, Vec3> = {};
     const counts: Record<string, number> = {};
     data.nodes.forEach((n) => {
       counts[n.repo] = (counts[n.repo] ?? 0) + 1;
     });
     const ringRadius = 360 + repos.length * 55;
-    repos.forEach((r, i) => {
-      repoColor[r] = REPO_PALETTE[i % REPO_PALETTE.length];
+    return repos.map((repo, i) => {
       const a = (i / Math.max(1, repos.length)) * Math.PI * 2;
-      centers[r] = {
-        x: Math.cos(a) * ringRadius,
-        y: Math.sin(a) * ringRadius,
-        z: (i % 2 === 0 ? 1 : -1) * (140 + i * 60),
+      return {
+        repo,
+        color: REPO_PALETTE[i % REPO_PALETTE.length],
+        count: counts[repo],
+        ballR: 70 + Math.cbrt(counts[repo]) * 30,
+        center: {
+          x: Math.cos(a) * ringRadius,
+          y: Math.sin(a) * ringRadius,
+          z: (i % 2 === 0 ? 1 : -1) * (140 + i * 60),
+        } as Vec3,
       };
     });
+  }, [data]);
+
+  // Build graph data only when the document set changes. Each project's nodes are
+  // placed inside their own 3D ball (and the layout is frozen) so every project
+  // reads as a clean round sphere; nodes share one color except conflicts (red).
+  const graphData = useMemo(() => {
+    const byRepo = new Map(clusters.map((c) => [c.repo, c]));
     const nodes: FGNode[] = data.nodes.map((n) => {
-      const c = centers[n.repo] ?? { x: 0, y: 0, z: 0 };
-      const ballR = 70 + Math.cbrt(counts[n.repo] ?? 1) * 30;
-      const p = spherePoint(ballR);
+      const cl = byRepo.get(n.repo);
+      const c = cl?.center ?? { x: 0, y: 0, z: 0 };
+      const p = spherePoint(cl?.ballR ?? 80);
       return {
         id: n.id,
         name: `${n.label}  ·  ${n.repo}`,
-        val: 1 + Math.max(0, Math.min(1, n.size)) * 6,
-        // conflict (red health) is uniform; everything else is its project color.
-        color: n.health === 'red' ? CONFLICT_COLOR : repoColor[n.repo] ?? '#94a3b8',
+        val: 1 + Math.max(0, Math.min(1, n.size)) * 3.5,
+        color: GENERIC_COLOR,
         repo: n.repo,
         accessible: n.accessible,
         x: c.x + p.x,
@@ -122,7 +158,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
       .filter((e) => ids.has(e.source) && ids.has(e.target))
       .map((e) => ({ source: e.source, target: e.target, type: e.type }));
     return { nodes, links };
-  }, [data]);
+  }, [clusters, data]);
 
   // One well-separated 3D center per repo is applied by seeding node positions
   // (see graphData above). No runtime d3 force manipulation — that races the
@@ -138,9 +174,9 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
       if (!composer) return;
       const bloom = new UnrealBloomPass(
         new THREE.Vector2(dims.width, dims.height),
-        0.7, // strength (subtle glow, not a white-out)
-        0.45, // radius
-        0.35, // threshold (only the brightest cores bloom)
+        1.1, // strength
+        0.5, // radius
+        0.55, // threshold (only bright white cited nodes bloom; grey stays calm)
       );
       composer.addPass(bloom);
       bloomAdded.current = true;
@@ -149,10 +185,14 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     }
   }, [dims, graphData]);
 
-  // The layout is frozen (no ticks), so fit the camera once nodes are placed.
+  // The layout is frozen (no ticks), so fit the camera exactly once on load.
+  const fittedRef = useRef(false);
   useEffect(() => {
-    if (graphData.nodes.length === 0) return;
-    const t = setTimeout(() => fgRef.current?.zoomToFit?.(700, 140), 500);
+    if (fittedRef.current || graphData.nodes.length === 0) return;
+    const t = setTimeout(() => {
+      fgRef.current?.zoomToFit?.(700, 140);
+      fittedRef.current = true;
+    }, 500);
     return () => clearTimeout(t);
   }, [graphData]);
 
@@ -192,6 +232,25 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     }
   }, [graphData]);
 
+  // Floating project-name tags above each cluster so they're easy to tell apart.
+  const labelsAdded = useRef(false);
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || labelsAdded.current || clusters.length === 0) return;
+    try {
+      const scene = fg.scene?.();
+      if (!scene) return;
+      for (const cl of clusters) {
+        const sprite = makeLabelSprite(cl.repo, cl.color);
+        sprite.position.set(cl.center.x, cl.center.y + cl.ballR + 110, cl.center.z);
+        scene.add(sprite);
+      }
+      labelsAdded.current = true;
+    } catch {
+      /* labels are best-effort */
+    }
+  }, [clusters]);
+
   // Responsive sizing.
   useEffect(() => {
     const el = wrapRef.current;
@@ -203,7 +262,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return () => ro.disconnect();
   }, []);
 
-  // Re-tint nodes when the highlight changes (no re-layout).
+  // Re-tint/blink the cited nodes when the highlight changes. No camera movement.
   useEffect(() => {
     fgRef.current?.refresh?.();
   }, [highlight]);
@@ -217,7 +276,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
 
   const nodeVal = useCallback((node: object) => {
     const n = asNode(node);
-    return highlightRef.current.nodeIds.has(n.id) ? n.val * 2.2 : n.val;
+    return highlightRef.current.nodeIds.has(n.id) ? n.val * 3 : n.val;
   }, []);
 
   const linkColor = useCallback((link: object) => {
@@ -227,13 +286,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
 
   const linkWidth = useCallback((link: object) => {
     const type = (link as unknown as FGLink).type;
-    return type === 'references' || type === 'sibling' ? 0.7 : 2;
-  }, []);
-
-  // Flowing particles on conflict/duplicate links so they're easy to spot.
-  const linkParticles = useCallback((link: object) => {
-    const type = (link as unknown as FGLink).type;
-    return type === 'conflicts-with' || type === 'duplicate-of' ? 3 : 0;
+    return type === 'conflicts-with' || type === 'duplicate-of' ? 1.2 : 0.8;
   }, []);
 
   const handleClick = useCallback(
@@ -242,11 +295,6 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     },
     [onNodeClick],
   );
-
-  // Fit the camera once the layout settles.
-  const handleEngineStop = useCallback(() => {
-    fgRef.current?.zoomToFit?.(600, 80);
-  }, []);
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', background: '#000000' }}>
@@ -261,18 +309,14 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         nodeLabel="name"
         nodeColor={nodeColor}
         nodeVal={nodeVal}
-        nodeRelSize={5}
+        nodeRelSize={3}
         nodeOpacity={0.95}
         nodeResolution={12}
         linkColor={linkColor}
         linkWidth={linkWidth}
-        linkOpacity={0.8}
-        linkDirectionalParticles={linkParticles}
-        linkDirectionalParticleWidth={1.8}
-        linkDirectionalParticleSpeed={0.006}
+        linkOpacity={0.45}
         warmupTicks={0}
         cooldownTicks={0}
-        onEngineStop={handleEngineStop}
         onNodeClick={handleClick}
       />
       )}
@@ -287,7 +331,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         }}
       >
         {[
-          ['#60a5fa', 'each color = a project'], ['#ef4444', 'conflict'], ['#ffffff', 'cited'],
+          ['#94a3b8', 'document'], ['#f87171', 'conflict link'], ['#ffffff', 'cited'],
         ].map(([c, label]) => (
           <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}` }} />
