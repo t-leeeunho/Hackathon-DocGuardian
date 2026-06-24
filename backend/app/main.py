@@ -561,6 +561,7 @@ class VerifyRequest(BaseModel):
     commitSha: str | None = None
     image: str = Field("python:3.11-slim")
     timeoutMs: int = Field(30_000, ge=1, le=120_000)
+    allowNetwork: bool = Field(False)
 
 
 @app.post(
@@ -578,6 +579,7 @@ def verify(req: VerifyRequest) -> dict:
             commit_sha=req.commitSha,
             image=req.image,
             timeout_ms=req.timeoutMs,
+            allow_network=req.allowNetwork,
         )
     )
     return result.model_dump()
