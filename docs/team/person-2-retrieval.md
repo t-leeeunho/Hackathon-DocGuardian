@@ -2,13 +2,19 @@
 
 Person 2 owns the deterministic retrieval pipeline that turns raw repository documentation into searchable, graph-aware, embedded knowledge for DocGuardian AI.
 
-> **As-built status (2026-06-23):** core retrieval pipeline is implemented; see [../implementation-status.md](../implementation-status.md).
+> **As-built status (2026-06-24):** core retrieval pipeline **and** duplicate/
+> conflict detection (`app/processing/conflicts.py`, `duplicate-of` ≥0.92 /
+> `conflicts-with` ≥0.85) are implemented, plus atomic intake and doc summaries
+> (`summarize.py`). See [../implementation-status.md](../implementation-status.md).
 
 ## Mission
 
 Person 2's mission is to build and maintain the retrieval half of deterministic Layers 1–3: ingestion, processing, embeddings, vector indexing, search, duplicate detection, and conflict seeding. As built today, sparse/shallow git repository checkouts and user drop-off intake become snake_case `RawDocument`, `DocChunk`, and structural `GraphEdge` records, then are embedded into Postgres + pgvector for cosine search. The pipeline consumes no LLM quota; embeddings use the `EmbeddingProvider` ABC with local fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, auto-detected dim) by default and Azure only when `EMBEDDING_PROVIDER=azure`.
 
-Duplicate detection and conflict seeding remain Person 2 work, but they are not implemented yet. Only structural `references` edges exist today.
+Duplicate detection and conflict seeding are now implemented in
+`app/processing/conflicts.py` (cross-document chunk cosine ≥ 0.92 → `duplicate-of`,
+≥ 0.85 → `conflicts-with`), runnable as a batch (`scripts/detect_conflicts.py`) or
+incrementally on intake. Structural `references` edges also exist.
 
 ## Scope — What You Own
 
@@ -22,7 +28,7 @@ Person 2 owns the full path from repository clone metadata to retrieval results:
 | Storage + vector search | `backend/app/storage/vectorstore.py`, `backend/app/storage/db.py`, `backend/app/storage/queries.py` | Single Postgres instance with pgvector; `documents`, `chunks`, and `edges` tables; `chunks.embedding VECTOR(dim)` with HNSW cosine index; `ON CONFLICT` upserts; `1 - (embedding <=> q)` cosine search. |
 | API surface | `backend/app/main.py` | Current API lives in one FastAPI file: `GET /search` and `POST /documents` are implemented here. There are no per-domain `api/ingest.py` or `api/search.py` router files yet; a future split can move thin routers out of `main.py`. |
 | CLI tooling | `backend/scripts/run_ingest.py`, `backend/scripts/load_vectors.py`, `backend/scripts/search.py`, `backend/scripts/add_file.py` | Verified local ingestion → processing → JSONL, vector loading, semantic search, and user file/paste intake workflows. |
-| Dedup/conflict services | Not implemented yet | Future duplicate candidate generation and conflict seed generation. There is no `backend/app/services/retrieval.py` or `backend/app/services/dedup_conflict.py` today. |
+| Dedup/conflict services | `backend/app/processing/conflicts.py`, `backend/app/processing/summarize.py` | Implemented: cross-doc duplicate/conflict edge detection (≥0.92 / ≥0.85) + one-line doc summaries (AI + extractive). |
 
 Concrete deliverables inside that scope:
 
@@ -61,8 +67,8 @@ If integration requires a contract field, a `main.py` route registration, a new 
 | `DocumentAdded` / `DocumentChanged` / `DocumentDeleted` | Produced | Not built yet | Future refresh → processing / graph | Explicit refresh event models and an incremental-refresh API are still pending. Current refresh updates the shallow checkout and re-emits raw documents through CLI processing. |
 | `DocChunk` | Produced | Real | Processing → embeddings/search/storage | Stable `chunk_id`, inherited `doc_id`/`commit_sha`/`commit_date`, heading path, source `line_range`, placeholder `char_range`, `contains_commands`, word-count `token_count`, and chunk `content_hash`. |
 | `GraphEdge` (`references`) | Produced | Real | Processing → `edges` table / graph queries | Link extractor emits structural `references` edges only from same-repo markdown links. |
-| `GraphEdge` (`duplicate-of`) | Produced | Not built yet | Future dedup service → graph/P3 | Intended threshold: chunk pairs from different `docId`s with score `>= 0.92`; edge weight equals score. |
-| `GraphEdge` (`conflicts-with`) | Produced | Not built yet | Future conflict seeding → graph/P3 | Intended threshold: similar chunks with score `>= 0.85` plus divergent extracted commands/values. |
+| `GraphEdge` (`duplicate-of`) | Produced | ✅ implemented | `app/processing/conflicts.py` → graph/P3 | Chunk pairs from different `docId`s with score `>= 0.92`; edge weight equals score. |
+| `GraphEdge` (`conflicts-with`) | Produced | ✅ implemented | `app/processing/conflicts.py` → graph/P3 | Similar chunks with score `>= 0.85`; edge weight equals score. |
 | `EmbeddingProvider` | Consumed | Real | `app/embeddings/provider.py` | ABC with `LocalEmbeddingProvider` as default fastembed/ONNX provider; `AzureEmbeddingProvider` when `EMBEDDING_PROVIDER=azure`. |
 | Vector record | Produced internally | Real | Embeddings → Postgres `chunks` table | Keyed by `chunk_id`; includes vector, text, metadata, heading path, line range, commit SHA. Vector dimension is `VECTOR(dim)` from the active provider. |
 | `SearchResult` / search matches | Produced | Real | `GET /search`, `scripts/search.py`, P3 retrieval node | API exposes camelCase DTOs from `main.py`; storage/search internals are snake_case. Results are sorted by pgvector cosine distance and scored as `1 - (embedding <=> q)`. |
@@ -112,7 +118,7 @@ Minimal contract shapes to keep in mind while building fixtures and tests:
 | Director / Phase 0 foundation | `app/models.py`, `app/main.py`, `repos.config.json`, Postgres + pgvector config. | Contract review feedback for `RawDocument`, refresh events, `DocChunk`, `GraphEdge`, and search DTOs. | Core retrieval is implemented; future work should keep snake_case core models and camelCase API DTOs aligned. |
 | P3 — Agent Orchestration & AI Reasoning | `EmbeddingProvider` interface and query conventions. | Real search matches for Curator/chat RAG; future duplicate/conflict candidates with chunk IDs and evidence. | P3 can already consume pgvector search through the retrieval node/API; semantic candidate edges are still pending. |
 | P4 — Governance, Verification & Metrics | Store/ACL interfaces, graph/document persistence needs, optional permission tags for query-time filtering. | `documents`, `chunks`, structural `references` edges, and future semantic candidate edges. | Current persistence is direct Postgres tables, not a separate P4-managed store. ACL/provenance/governance are pending. |
-| P1 — Frontend & Demo Experience | Search and graph expectations through API contracts only. | `/search` results and graph edges indirectly through `main.py` endpoints. | P1 should consume camelCase API DTOs; no frontend exists yet. |
+| P1 — Frontend & Demo Experience | Search and graph expectations through API contracts only. | `/search` results and graph edges indirectly through `main.py` endpoints. | P1 consumes camelCase API DTOs; the frontend is scaffolded. |
 | Git CLI / repositories | Sparse/shallow clones, file contents, commit metadata. | Local `data/<repo-short>` working copies and processed JSONL. | Real from the start. Scope aggressively to docs folders to avoid huge checkouts. |
 | Embedding backend | Local fastembed by default; Azure embeddings only by config. | Chunk text and metadata for embedding/upsert. | Ingestion/search do not need Azure. Azure is required only if embeddings are explicitly switched or for P3 chat/propose agents. |
 

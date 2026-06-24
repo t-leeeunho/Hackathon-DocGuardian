@@ -20,9 +20,9 @@ future frontend must mirror the camelCase API layer.
 3. `backend/app/agents/schemas.py` — agent structured outputs (`Citation`,
    `ChatAnswer`, `AgentProposal`) used by LangGraph Curator/Guardian endpoints.
 
-There is currently **no** `frontend/src/lib/types.ts`. When the frontend is built,
-its TypeScript types must mirror the camelCase API responses in README §8B and the
-actual `/chat` and `/propose` payloads, not the internal snake_case models directly.
+The frontend mirror is `frontend/src/lib/types.ts`: its TypeScript types mirror the
+camelCase API responses in README §8B and the actual `/chat` and `/propose`
+payloads, not the internal snake_case models directly.
 
 ## Before you change anything here
 
@@ -44,10 +44,9 @@ actual `/chat` and `/propose` payloads, not the internal snake_case models direc
 4. Future TypeScript interfaces should mirror the **API JSON** exactly:
    `str→string`, `int|float→number`, `list[X]→X[]`, `Optional[X]→X | null`, nested
    models → nested interfaces. No `any`.
-5. Update matching fixtures when they exist. The repo currently has no frontend
-   fixtures and no pytest/tsc gate configured.
-6. Verify with the tooling that exists today: backend CLI/API smoke tests. Once
-   pytest and frontend tooling exist, add model validation tests and `npx tsc --noEmit`.
+5. Update matching fixtures when they exist (`frontend/src/lib/fixtures.ts`).
+6. Verify with the tooling that exists today: `python -m pytest tests -q` (backend),
+   `npm run lint` / `npm run test` (frontend), plus the CLI/API smoke path.
 7. Announce the change to the affected engineer agents/people.
 
 ## Why this matters

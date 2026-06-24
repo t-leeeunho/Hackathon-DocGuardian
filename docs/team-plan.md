@@ -4,10 +4,12 @@
 > **parallel execution model**, the **milestones**, and the **general (shared)
 > todos**. Each person's detailed todos live in `docs/team/person-N-*.md`.
 >
-> **As-built note (2026-06-23):** the backend (ingestion → processing →
-> embeddings → pgvector retrieval → LangGraph agents → FastAPI) is implemented; the
-> frontend, governance, metrics, and verification are not. The ownership map below
-> has been updated to the **actual** backend layout. See
+> **As-built note (2026-06-24):** the backend (ingestion → processing →
+> embeddings → pgvector retrieval → LangGraph agents → FastAPI) is implemented,
+> **plus governance** (ACL, approval/rollback, provenance, conflict detection,
+> health, `/metrics`), a **real Docker verification sandbox**, and async ingest +
+> `WS /stream`. The frontend is **scaffolded and buildable**. The ownership map below
+> reflects the **actual** layout. See
 > [`implementation-status.md`](implementation-status.md) for the ground truth.
 
 ---
@@ -43,17 +45,16 @@ own area; a few **shared** files are changed only by the director.
 - `backend/repos.config.json` — ingestion sources.
 - `backend/app/storage/db.py` — the Postgres schema (`init_schema`), touched by P2 + P4.
 - `backend/.env.example`, `backend/requirements.txt`, `backend/docker-compose.yml`.
-- `frontend/src/lib/types.ts` — *does not exist yet*; when created it mirrors the
-  camelCase API (README §8B).
+- `frontend/src/lib/types.ts` — the camelCase API mirror (README §8B); **exists**.
 
 ### 2.2 Per-person ownership (actual paths; ✅ = exists, ⬜ = to build)
 
 | Person | Owns (directories / files) | API endpoints |
 | --- | --- | --- |
-| **P1** | `frontend/**` ⬜ (entire frontend: components, hooks, API/WS client, styles) | consumes the API (README §8B) |
-| **P2** | `backend/app/ingestion/**` ✅, `backend/app/processing/**` ✅, `backend/app/embeddings/provider.py` ✅, `backend/app/storage/vectorstore.py` ✅, `backend/scripts/**` ✅; duplicate/conflict detection ⬜ | `GET /search` ✅, `POST /documents` ✅, `POST /ingest/refresh` ⬜ |
+| **P1** | `frontend/**` 🟡 (scaffolded: components, hooks, API/WS client, styles) | consumes the API (README §8B) |
+| **P2** | `backend/app/ingestion/**` ✅, `backend/app/processing/**` ✅ (incl. `conflicts.py`, `summarize.py`), `backend/app/embeddings/provider.py` ✅, `backend/app/storage/vectorstore.py` ✅, `backend/scripts/**` ✅ | `GET /search` ✅, `POST /documents` ✅, `POST /ingest/refresh` ⬜ |
 | **P3** | `backend/app/agents/**` ✅ (`graph.py` LangGraph, `llm.py` Azure, `schemas.py`) | `POST /chat` ✅, `POST /propose` ✅ |
-| **P4** | `backend/app/storage/db.py` + `queries.py` ✅ (documents/chunks/edges); governance/ACL ⬜, provenance/approval ⬜, metrics ⬜, verification sandbox ⬜, health scoring ⬜ | `GET /graph` ✅, `GET /documents/{id}` ✅, `GET /metrics` ⬜, `POST /proposals/:id/approve` ⬜, `WS /stream` ⬜ |
+| **P4** | `backend/app/storage/db.py` + `queries.py` ✅, `backend/app/governance/**` ✅, `backend/app/services/**` ✅ (verification/events/jobs) | `GET /graph` ✅, `GET /documents/{id}` ✅, `GET /metrics` ✅, `POST /proposals/:id/approve` ✅, `POST /proposals/:id/rollback` ✅, `POST /verify` ✅, `WS /stream` ✅ |
 
 > **Note:** today the API is one `app/main.py` and `app/storage/` is shared by P2
 > (vectors) and P4 (metadata/graph). Splitting into per-domain routers and separate
@@ -72,9 +73,9 @@ detection + health scoring, and the governance/metrics/verification layer.
 | Track | Status | What's left |
 | --- | --- | --- |
 | Backend foundation + pipeline + agents | ✅ done | — |
-| P2 — duplicate/conflict detection + node health | ⬜ next | similarity-threshold edges, freshness/health scoring |
-| P4 — governance / metrics / verification | ⬜ next | ACL, approval, provenance + rollback, `/metrics`, sandbox, `WS /stream` |
-| P1 — frontend | ⬜ next | build the UI on the live API |
+| P2 — duplicate/conflict detection + node health | ✅ done | (tuning thresholds for the demo) |
+| P4 — governance / metrics / verification | ✅ done | demo seed data |
+| P1 — frontend | 🟡 scaffolded | wire governance panels (approve/metrics/provenance) to live endpoints |
 | Demo polish | ⬜ later | planted fixtures, rehearse the 9-step demo |
 
 ### What each person builds against (today)
@@ -91,9 +92,9 @@ detection + health scoring, and the governance/metrics/verification layer.
 | --- | --- | --- |
 | **M1** | Backend pipeline + retrieval API live (ingest → chunk → embed → pgvector → `/search`) | ✅ reached |
 | **M2** | LangGraph Curator/Guardian agents live (`/chat`, `/propose`) | ✅ reached |
-| **M3** | Duplicate/conflict detection + node health scoring feed a real `/graph` | ⬜ next |
-| **M4** | Governance (ACL/approval/provenance) + `/metrics` + verification + `WS /stream` | ⬜ |
-| **M5** | Frontend on the live API + rehearsed 9-step demo | ⬜ |
+| **M3** | Duplicate/conflict detection + node health scoring feed a real `/graph` | ✅ reached |
+| **M4** | Governance (ACL/approval/provenance) + `/metrics` + verification + `WS /stream` | ✅ reached |
+| **M5** | Frontend on the live API + rehearsed 9-step demo | 🟡 frontend scaffolded; demo wiring next |
 
 ---
 
@@ -110,14 +111,15 @@ Per-person build todos are in the individual docs. ✅ = done, ⬜ = remaining.
 - [x] **G6.** FastAPI API (`app/main.py`): `/health`, `/search`, `/documents`, `/tree`, `/graph`, `/documents/{id}`, `/chat`, `/propose`.
 - [x] **G7.** LangGraph Curator/Guardian graphs (`app/agents/graph.py`) + Azure chat factory (`app/agents/llm.py`).
 
-### 5.B Remaining shared work — TODO
-- [ ] **G8.** Duplicate detection (`duplicate-of` at score ≥ 0.92) + conflict seeding (`conflicts-with` at ≥ 0.85 + divergent commands).
-- [ ] **G9.** Node **health/freshness scoring** + importance (replace the `/graph` placeholders `green`/`0.5`/`true`).
-- [ ] **G10.** Governance: ACL columns + enforcement at retrieval/answer/write.
-- [ ] **G11.** Approval flow + `POST /proposals/:id/approve`; provenance log + one-click rollback (Postgres tables).
-- [ ] **G12.** Metrics aggregation + `GET /metrics`.
-- [ ] **G13.** Verification sandbox (README §10.6 targets a real containerized run).
-- [ ] **G14.** `WS /stream` live updates + `POST /ingest/refresh` (incremental refresh endpoint).
+### 5.B Remaining shared work
+- [x] **G8.** Duplicate detection (`duplicate-of` at score ≥ 0.92) + conflict seeding (`conflicts-with` at ≥ 0.85) — `app/processing/conflicts.py`.
+- [x] **G9.** Node **health/freshness scoring** + importance — `app/governance/health.py` (replaces the old `/graph` placeholders).
+- [x] **G10.** Governance: ACL columns + enforcement at retrieval/answer/write — `app/governance/acl.py`.
+- [x] **G11.** Approval flow + `POST /proposals/:id/approve`; provenance log + one-click rollback — `app/governance/service.py` + Postgres `proposals`/`provenance`.
+- [x] **G12.** Metrics aggregation + `GET /metrics` — `app/governance/metrics.py`.
+- [x] **G13.** Verification sandbox (real containerized run) — `app/services/verification.py`.
+- [x] **G14.** `WS /stream` live updates + async ingest (`202`+job). `POST /ingest/refresh` still **TODO**.
+- [ ] **G15.** Wire the frontend governance panels (approve/metrics/provenance) to the live endpoints + demo seed data.
 - [ ] **G15.** Frontend (entire) on the live API; create `frontend/src/lib/types.ts` mirroring README §8B.
 - [ ] **G16.** Richer `AgentProposal` (structured `diff{}`, `evidence[]`, `verification{}`) per README §8A.4.
 

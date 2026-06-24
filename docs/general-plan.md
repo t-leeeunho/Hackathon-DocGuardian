@@ -1,9 +1,13 @@
 # DocGuardian AI — General Implementation Plan
 
-> **Status (2026-06-23):** the **backend pipeline is implemented** (ingestion →
+> **Status (2026-06-24):** the **backend is implemented end-to-end** (ingestion →
 > processing → embeddings → pgvector retrieval → LangGraph Curator/Guardian agents
-> → FastAPI). The **frontend, governance, metrics, and verification are not built
-> yet.** For the precise as-built snapshot, see
+> → FastAPI) **plus the governance slice** (ACL, approval/rollback, append-only
+> provenance, duplicate/conflict detection, derived health, `MetricsDTO`), a **real
+> Docker verification sandbox**, atomic intake with AI summaries, and async ingest +
+> `WS /stream`. The **frontend is scaffolded and buildable** (consumes the API, live
+> WS refresh); remaining work is wiring its governance panels to the live endpoints.
+> For the precise as-built snapshot, see
 > [`implementation-status.md`](implementation-status.md) — when this plan and the
 > code disagree, that file reflects reality.
 > **Audience:** the whole team. Read this first, then `team-plan.md`, then your
@@ -127,12 +131,12 @@ to **local fastembed** (no Azure); **only the agents require Azure OpenAI** (the
 | Area | Decision | Notes |
 | --- | --- | --- |
 | Backend | **Python 3.11+ + FastAPI** | Pydantic v2; REST today, WebSocket planned |
-| Frontend | **React + TypeScript + Vite + Tailwind + shadcn/ui + React Flow (2D) + Monaco** | Monaco for the diff/editor views (README §10.1); *not built yet* |
+| Frontend | **React + TypeScript + Vite + Tailwind + React Flow (2D) + Monaco** | Monaco for the diff/editor views (README §10.1); *scaffolded & buildable (Radix + lucide, no shadcn/ui yet)* |
 | Storage | **Single PostgreSQL + pgvector** | One instance = metadata + graph edges + the vector index; run locally via `docker compose` (`pgvector/pgvector:pg16`); managed Azure storage intentionally not used for the MVP (README §10.4) |
 | Embeddings | **Provider-abstracted; local fastembed default** | `BAAI/bge-small-en-v1.5` (384-dim, ONNX) by default; swappable to Azure via `EMBEDDING_PROVIDER=azure` |
 | LLM agents | **Azure OpenAI chat (required)** | Curator + Guardian via **LangGraph**; `/chat` + `/propose` return 503 if Azure is unset; no local/fake chat fallback |
-| Verification | **Real containerized sandbox (target)** | README §10.6; *not implemented yet* |
-| Auth/ACL | **Mocked roles/users** | Governance backed by Postgres; Entra ID deferred; *not implemented yet* |
+| Verification | **Real containerized sandbox** | README §10.6; *implemented (`app/services/verification.py`, real Docker; `available:false` without Docker)* |
+| Auth/ACL | **Mocked roles/users** | Governance backed by Postgres; Entra ID deferred; *ACL/approval/provenance/rollback implemented* |
 
 These are **locked** (README §10). Changing them is a director-level decision
 because they ripple across every layer.
@@ -150,27 +154,32 @@ three places rather than one frozen camelCase package (full target schemas: READ
   (`Match`, `GraphNode`, `GraphResponse`, `DocumentResponse`, …) + camelCase dicts
   in `app/storage/queries.py`. This is the camelCase shape the frontend consumes (README §8B).
 - **Agent structured outputs** — `backend/app/agents/schemas.py`: `Citation`,
-  `ChatAnswer`, `AgentProposal` (a streamlined subset of README §8A.4).
+  `ChatAnswer`, `AgentProposal` (aligned with README §8A.4).
+- **Governance + frontend contracts** — `backend/app/governance/` (`Principal`,
+  `MetricsDTO`, persisted `proposals`/`provenance`), `app/services/verification.py`
+  (`SandboxRequest`/`SandboxResult`), and the frontend mirror
+  `frontend/src/lib/types.ts` (camelCase, README §8B).
 
-There is **no `frontend/src/lib/types.ts` yet** (frontend unbuilt) and **no
-`to_camel` alias generator** on the core models. When the frontend is built, its TS
-types should mirror the camelCase API in README §8B. Contract changes still flow
+The frontend `frontend/src/lib/types.ts` mirrors the camelCase API; the API client
+and `governance/serialize.py` deep-convert the snake_case agent payloads. There is
+no `to_camel` alias generator on the core models. Contract changes still flow
 through the director.
 
 | Contract | Where it lives today | Status |
 | --- | --- | --- |
 | `RawDocument`, `DocChunk`, `GraphEdge` | `app/models.py` (snake_case) | ✅ implemented |
 | `references` graph edges | `app/processing/processor.py` | ✅ implemented |
-| `duplicate-of` / `conflicts-with` edges | — | ❌ pending |
+| `duplicate-of` / `conflicts-with` edges | `app/processing/conflicts.py` | ✅ implemented (≥0.92 / ≥0.85) |
 | `Match` / search response, `GraphDTO`, document DTO | `app/main.py`, `app/storage/queries.py` (camelCase) | ✅ implemented |
-| `ChatAnswer`, `AgentProposal`, `Citation` | `app/agents/schemas.py` (snake_case) | ✅ implemented (streamlined) |
-| `DocumentRecord`, `ProvenanceEntry`, `MetricsDTO`, `SandboxRequest/Result`, `GraphHighlightEvent` | — | ❌ pending |
+| `ChatAnswer`, `AgentProposal`, `Citation` | `app/agents/schemas.py` (snake_case) | ✅ implemented (README §8A.4 shape) |
+| `ProvenanceEntry`, `MetricsDTO`, `SandboxRequest/Result` | `app/governance/`, `app/services/verification.py` | ✅ implemented |
+| `DocumentRecord` (full governance record), `GraphHighlightEvent` | partial (governance cols on `documents`); `GraphHighlightEvent` client-side | 🟡 partial |
 
 **Cross-cutting rules (upheld where built):**
 - **Provenance** — every record carries its originating `commit_sha`; agent
   citations have their `commit_sha` overwritten with the authoritative retrieved value.
 - **Idempotent ingestion** — unchanged `content_hash` ⇒ no re-processing (`ON CONFLICT` upserts).
-- **Permission propagation** — ACLs at retrieval/answer/write — *pending (governance unbuilt)*.
+- **Permission propagation** — ACLs at retrieval/answer/write — *implemented (`app/governance/acl.py`, fail-closed)*.
 - **Configuration-driven sources** — onboarding a repo is a `repos.config.json` edit.
 
 ---
@@ -217,10 +226,14 @@ shared todos are in **`team-plan.md`**; each person's detailed todos are in
 
 ## 9. Phases & Milestones
 
-> **Where we are (2026-06-23):** the backend foundation **and** the retrieval/agent
-> pipeline are built (ingestion, processing, embeddings, pgvector search, LangGraph
-> Curator/Guardian, FastAPI). Remaining: duplicate/conflict detection, governance/
-> metrics/verification, and the entire frontend. See `implementation-status.md`.
+> **Where we are (2026-06-24):** the backend foundation, the retrieval/agent
+> pipeline, **and the governance/conflict/verification slice** are built (ingestion,
+> processing, embeddings, pgvector search, LangGraph Curator/Guardian, FastAPI, ACL,
+> approval/rollback, provenance, duplicate/conflict detection, health scoring,
+> `/metrics`, real Docker sandbox, async ingest + `WS /stream`). The frontend is
+> scaffolded and buildable. Remaining: wiring the frontend governance panels to the
+> live endpoints, `POST /ingest/refresh`, and demo seed data. See
+> `implementation-status.md`.
 
 | Phase | Status | Deliverable |
 | --- | --- | --- |
@@ -228,10 +241,10 @@ shared todos are in **`team-plan.md`**; each person's detailed todos are in
 | **Ingestion + Processing** | ✅ done | sparse/shallow clone + commit metadata → `RawDocument`; heading-aware chunking + `references` edges |
 | **Embeddings + Retrieval** | ✅ done | fastembed/Azure providers, pgvector store + HNSW cosine search, `/search`, CLI |
 | **Agents** | ✅ done | LangGraph `/chat` (1 LLM call) + `/propose` (2 LLM calls); evidence/confidence guardrails |
-| **Duplicate/conflict detection** | ⬜ pending | `duplicate-of` (≥0.92) + `conflicts-with` (≥0.85) edges; node health scoring |
-| **Governance / Metrics / Verification** | ⬜ pending | ACL, approval, provenance + rollback, `/metrics`, real sandbox, `WS /stream` |
-| **Frontend** | ⬜ pending | graph, chat, drop-off, diff/review, provenance, metrics (builds on README §8B API) |
-| **Demo polish** | ⬜ pending | planted stale/duplicate/conflict fixtures; rehearse the 9-step demo |
+| **Duplicate/conflict detection** | ✅ done | `duplicate-of` (≥0.92) + `conflicts-with` (≥0.85) edges; derived node health scoring |
+| **Governance / Metrics / Verification** | ✅ done | ACL, approval, provenance + rollback, `/metrics`, real Docker sandbox, `WS /stream` |
+| **Frontend** | 🟡 scaffolded | graph, chat, drop-off, diff/review, provenance, metrics build on README §8B API; governance panels still on fixtures |
+| **Demo polish** | ⬜ pending | planted stale/duplicate/conflict seed fixtures; rehearse the 9-step demo |
 
 ---
 

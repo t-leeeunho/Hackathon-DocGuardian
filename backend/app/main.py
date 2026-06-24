@@ -11,13 +11,18 @@ Interactive docs:
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.embeddings.provider import get_embedding_provider
-from app.ingestion.intake import TEXT_SUFFIXES, UnsupportedFormatError, ingest_content
-from app.storage.queries import get_document, get_graph, list_doc_ids
+from app.ingestion.intake import (
+    TEXT_SUFFIXES,
+    IngestError,
+    UnsupportedFormatError,
+    ingest_content,
+)
+from app.storage.queries import get_doc_summaries, get_document, get_graph, list_doc_ids
 from app.storage.vectorstore import search as vector_search
 from app.tree import build_tree
 
@@ -40,8 +45,9 @@ tags_metadata = [
     {"name": "intake", "description": "Add user documents (drop-off)."},
     {"name": "navigation", "description": "File tree and document graph."},
     {"name": "agents", "description": "LangGraph Curator/Guardian reasoning (Azure OpenAI)."},
+    {"name": "governance", "description": "Proposals, approval, provenance, metrics."},
+    {"name": "verification", "description": "Containerized verification sandbox."},
 ]
-
 app = FastAPI(
     title="DocGuardian AI API",
     version="0.1.0",
@@ -93,12 +99,15 @@ class IngestResponse(BaseModel):
     docId: str
     chunks: int
     edges: int
+    conflictEdges: int = Field(0, description="duplicate/conflict edges found on intake")
+    summary: str | None = Field(None, description="AI/extractive one-line description")
 
 
 class TreeNode(BaseModel):
     name: str
     type: str = Field(..., description="'folder' or 'file'")
     path: str
+    summary: str | None = Field(None, description="one-line description for file nodes")
     children: list["TreeNode"] | None = None
 
 
@@ -192,15 +201,84 @@ def search(
     description="Chunks, embeds, and stores user content. Text formats only; "
     "binary formats (PDF/DOCX) return 415.",
 )
-def add_document(req: IngestRequest) -> IngestResponse:
+def add_document(
+    req: IngestRequest,
+    background: bool = Query(
+        False, description="if true, return 202 + a jobId and ingest in the background"
+    ),
+):
     suffix = ("." + req.name.rsplit(".", 1)[-1].lower()) if "." in req.name else ""
     if suffix not in TEXT_SUFFIXES:
         raise HTTPException(status_code=415, detail=f"{suffix!r} is not a supported text format")
+
+    # Async path: don't make the user wait for embed + summarize + conflict scan.
+    if background:
+        import threading
+
+        from fastapi.responses import JSONResponse
+
+        from app.ingestion.intake import make_raw_document
+        from app.services import jobs
+
+        doc_id = make_raw_document(req.name, req.content, req.namespace).doc_id
+        job = jobs.create_job(doc_id)
+        threading.Thread(
+            target=_run_ingest_job,
+            args=(job["jobId"], req.name, req.content, req.namespace),
+            daemon=True,
+        ).start()
+        return JSONResponse(status_code=202, content=job)
+
     try:
         result = ingest_content(req.name, req.content, req.namespace)
     except UnsupportedFormatError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
-    return IngestResponse(docId=result["doc_id"], chunks=result["chunks"], edges=result["edges"])
+    except IngestError as exc:
+        # Whole ingest rolled back — nothing was persisted.
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return IngestResponse(
+        docId=result["doc_id"],
+        chunks=result["chunks"],
+        edges=result["edges"],
+        conflictEdges=result.get("conflictEdges", 0),
+        summary=result.get("summary"),
+    )
+
+
+def _run_ingest_job(job_id: str, name: str, content: str, namespace: str) -> None:
+    """Background worker: run the atomic ingest and broadcast its outcome.
+
+    The ingest itself is all-or-nothing; this only reports progress. A failure
+    leaves nothing persisted and emits an ``ingest`` failed event.
+    """
+    from app.services import events, jobs
+
+    jobs.set_status(job_id, "processing")
+    events.publish("ingest", jobId=job_id, status="processing")
+    try:
+        result = ingest_content(name, content, namespace)
+        jobs.set_status(job_id, "succeeded", result=result)
+        events.publish(
+            "ingest", jobId=job_id, status="ready", docId=result["doc_id"]
+        )
+        events.publish("graph", docId=result["doc_id"])
+    except Exception as exc:  # IngestError or anything else -> nothing persisted
+        jobs.set_status(job_id, "failed", error=str(exc))
+        events.publish("ingest", jobId=job_id, status="failed", error=str(exc))
+
+
+@app.get(
+    "/jobs/{job_id}",
+    tags=["intake"],
+    summary="Status of a background ingest job",
+)
+def job_status(job_id: str) -> dict:
+    from app.services import jobs
+
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
+    return job
 
 
 @app.get(
@@ -210,7 +288,7 @@ def add_document(req: IngestRequest) -> IngestResponse:
     summary="File-system tree (left sidebar)",
 )
 def tree(namespace: str | None = Query(None, description="Filter to one namespace/repo")) -> list:
-    return build_tree(list_doc_ids(namespace))
+    return build_tree(list_doc_ids(namespace), get_doc_summaries(namespace))
 
 
 @app.get(
@@ -220,7 +298,14 @@ def tree(namespace: str | None = Query(None, description="Filter to one namespac
     summary="Document graph (nodes + edges)",
 )
 def graph(repo: str | None = Query(None, description="shortName filter")) -> dict:
-    return get_graph(repo)
+    # Governed graph: real derived health/importance + ACL filtering. Falls back
+    # to the plain query if the governance store is unavailable.
+    try:
+        from app.governance.store import get_governed_graph
+
+        return get_governed_graph(repo)
+    except Exception:  # pragma: no cover - fallback keeps the graph alive
+        return get_graph(repo)
 
 
 @app.get(
@@ -278,9 +363,152 @@ def chat(req: ChatRequest) -> dict:
 def propose(req: ProposeRequest) -> dict:
     from app.agents.graph import run_propose
     from app.agents.llm import AzureNotConfiguredError
+    from app.governance.store import save_proposal
 
     try:
-        return run_propose(req.instruction, repo=req.repo, k=req.k)
+        proposal = run_propose(req.instruction, repo=req.repo, k=req.k)
     except AzureNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # Persist so the proposal can be looked up, approved, and audited.
+    try:
+        proposal = save_proposal(proposal)
+    except Exception:  # pragma: no cover - persistence is best-effort for the agent path
+        pass
+    return proposal
+
+
+# --------------------------------------------------------------------------- #
+# Governance endpoints (proposals, approval, provenance, metrics)
+# --------------------------------------------------------------------------- #
+class ApproveRequest(BaseModel):
+    approver: str = Field(..., examples=["alice@example.com"])
+    roles: list[str] | None = Field(None, description="ACL grant tokens the approver holds")
+    reason: str = Field("", description="why this change is approved")
+    force: bool = Field(False, description="apply even if staged-approval would trigger")
+
+
+@app.get(
+    "/proposals/{proposal_id}",
+    tags=["governance"],
+    summary="Fetch a persisted proposal + approval/provenance context",
+)
+def get_proposal(proposal_id: str) -> dict:
+    from app.governance.store import get_proposal_dto
+
+    dto = get_proposal_dto(proposal_id)
+    if dto is None:
+        raise HTTPException(status_code=404, detail=f"proposal not found: {proposal_id}")
+    return dto
+
+
+@app.post(
+    "/proposals/{proposal_id}/approve",
+    tags=["governance"],
+    summary="Approve + apply a proposal (writes provenance)",
+)
+def approve(proposal_id: str, req: ApproveRequest) -> dict:
+    from app.governance.service import GovernanceError, StagedApprovalRequired, approve_proposal
+
+    try:
+        return approve_proposal(
+            proposal_id, req.approver, req.roles, req.reason, force=req.force
+        )
+    except StagedApprovalRequired as exc:
+        raise HTTPException(status_code=202, detail=str(exc)) from exc
+    except GovernanceError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@app.post(
+    "/proposals/{proposal_id}/rollback",
+    tags=["governance"],
+    summary="Roll back an applied proposal (append-only provenance)",
+)
+def rollback(proposal_id: str, req: ApproveRequest) -> dict:
+    from app.governance.service import GovernanceError, rollback_proposal
+
+    try:
+        return rollback_proposal(proposal_id, req.approver, req.roles, req.reason)
+    except GovernanceError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@app.get(
+    "/provenance/{doc_id:path}",
+    tags=["governance"],
+    summary="Append-only provenance history for a document",
+    description="Audit trail for a document. Uses a /provenance/ prefix so the "
+    "catch-all /documents/{id} route does not shadow it.",
+)
+def document_provenance(doc_id: str) -> list[dict]:
+    from app.governance.store import list_provenance
+
+    return list_provenance(doc_id=doc_id)
+
+
+@app.get(
+    "/metrics",
+    tags=["governance"],
+    summary="Governance dashboard counters (MetricsDTO)",
+)
+def metrics() -> dict:
+    from app.governance.store import get_metrics_dto
+
+    return get_metrics_dto()
+
+
+# --------------------------------------------------------------------------- #
+# Verification sandbox (real containerized execution)
+# --------------------------------------------------------------------------- #
+class VerifyRequest(BaseModel):
+    command: str = Field(..., examples=["python -c 'print(1+1)'"])
+    repo: str | None = None
+    commitSha: str | None = None
+    image: str = Field("python:3.11-slim")
+    timeoutMs: int = Field(30_000, ge=1, le=120_000)
+
+
+@app.post(
+    "/verify",
+    tags=["verification"],
+    summary="Run a verification command in an isolated container",
+)
+def verify(req: VerifyRequest) -> dict:
+    from app.services.verification import SandboxRequest, run_verification
+
+    result = run_verification(
+        SandboxRequest(
+            command=req.command,
+            repo=req.repo,
+            commit_sha=req.commitSha,
+            image=req.image,
+            timeout_ms=req.timeoutMs,
+        )
+    )
+    return result.model_dump()
+
+
+# --------------------------------------------------------------------------- #
+# WebSocket live dashboard (README §8B WS /stream)
+# --------------------------------------------------------------------------- #
+@app.websocket("/stream")
+async def stream(ws: WebSocket) -> None:
+    import asyncio
+
+    from app.services import events
+
+    await ws.accept()
+    queue = events.subscribe()
+    await ws.send_json({"type": "connected"})
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15)
+                await ws.send_json(event)
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "heartbeat"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        events.unsubscribe(queue)
 
