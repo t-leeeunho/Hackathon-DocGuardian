@@ -1,5 +1,10 @@
 # DocGuardian AI — local Postgres + pgvector for development.
 # Start with:  docker compose up -d
+#
+# On a fresh machine the DB is pre-seeded automatically:
+#   docker/init/01-seed.sql is mounted into /docker-entrypoint-initdb.d/
+#   Postgres runs it ONLY when the pgdata volume is empty (first start).
+#   Existing machines keep their own data unchanged.
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -12,6 +17,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U docguardian"]
       interval: 5s
