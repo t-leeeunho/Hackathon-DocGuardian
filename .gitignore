@@ -16,6 +16,11 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python `lib/` ignore above also matches frontend source; keep the
+# frontend data layer (api/types/fixtures) tracked.
+!frontend/src/lib/
+# TypeScript incremental build cache (generated)
+*.tsbuildinfo
 parts/
 sdist/
 var/
