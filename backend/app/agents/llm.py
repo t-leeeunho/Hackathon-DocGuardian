@@ -99,9 +99,20 @@ def _section(prompt: str, start: str, *, until: str | None = None) -> str:
     return body.strip()
 
 
+def _sources_block(prompt: str) -> str:
+    """The retrieved-sources section, anchored on the exact ``\\n\\nSOURCES:\\n`` marker.
+
+    Using the precise (and last) marker avoids colliding with the word ``SOURCES:``
+    that legitimately appears in an agent's system prompt.
+    """
+    marker = "\n\nSOURCES:\n"
+    idx = prompt.rfind(marker)
+    return prompt[idx + len(marker) :].strip() if idx != -1 else ""
+
+
 def _first_source(prompt: str) -> tuple[str, str, list[int]]:
     """Parse the first ``[1] doc_id=… lines=a-b`` block produced by ``_format_sources``."""
-    sources = _section(prompt, "SOURCES:")
+    sources = _sources_block(prompt)
     if not sources or sources.startswith("(no sources"):
         return "", "", []
     # Blocks are joined by "\n\n"; split only at a real block boundary so that
@@ -122,7 +133,7 @@ def _first_source(prompt: str) -> tuple[str, str, list[int]]:
 
 def _source_doc_ids(prompt: str) -> list[str]:
     seen: list[str] = []
-    for m in re.finditer(r"doc_id=(\S+)", _section(prompt, "SOURCES:")):
+    for m in re.finditer(r"doc_id=(\S+)", _sources_block(prompt)):
         if m.group(1) not in seen:
             seen.append(m.group(1))
     return seen
@@ -158,8 +169,8 @@ def _fake_chat_answer(prompt: str) -> ChatAnswer:
 
 
 def _fake_curator_draft(prompt: str) -> CuratorDraft:
-    instruction = _section(prompt, "INSTRUCTION:", until="SOURCES:") or _section(
-        prompt, "QUESTION:", until="SOURCES:"
+    instruction = _section(prompt, "\n\nINSTRUCTION:\n", until="\n\nSOURCES:\n") or _section(
+        prompt, "\n\nQUESTION:\n", until="\n\nSOURCES:\n"
     )
     action = _infer_action(instruction)
     doc_id, snippet, _ = _first_source(prompt)
