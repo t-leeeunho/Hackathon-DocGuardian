@@ -1,9 +1,11 @@
 # DocGuardian AI — Planning Documentation
 
-This folder contains the **implementation plan** for DocGuardian AI. It is
-planning only — there is no application code in the repository yet. The product
-specification lives in the root [`README.md`](../README.md); these documents turn
-that spec into an actionable, parallelizable build plan.
+This folder contains the **implementation plan** for DocGuardian AI, kept in sync
+with the code. The **backend is implemented**; the frontend, governance, metrics,
+and verification are not yet. The product spec lives in the root
+[`README.md`](../README.md); these documents turn it into an actionable build plan.
+For the precise as-built snapshot, see
+**[`implementation-status.md`](implementation-status.md)**.
 
 ## What is DocGuardian AI?
 
@@ -15,14 +17,17 @@ rollback. See [`README.md`](../README.md) for the full spec.
 
 ## Reading order
 
-1. **[`general-plan.md`](general-plan.md)** — the **detailed general plan**: problem &
+1. **[`implementation-status.md`](implementation-status.md)** — the **as-built snapshot**:
+   what the backend actually does today, the real API (README §8B), the actual
+   contracts, and what's still pending. *Read this first to know reality.*
+2. **[`general-plan.md`](general-plan.md)** — the **general plan**: problem &
    solution, MVP scope, the 5-layer architecture, runtime agent design, locked tech
-   stack, the frozen data contracts, the **contracts-first parallel execution model**,
-   phases & milestones (M1–M4), the demo script, risks, and success metrics. *Read this first.*
-2. **[`team-plan.md`](team-plan.md)** — the **team plan**: the 4 roles, the
-   **file/directory ownership map** (which guarantees no merge conflicts), the
-   parallel execution model, the milestones, and the **general (shared) TODOs**.
-3. **Per-person detailed plans** (in [`team/`](team/)) — each engineer's scope,
+   stack, the data contracts, the parallel execution model, phase status, the demo
+   script, risks, and success metrics.
+3. **[`team-plan.md`](team-plan.md)** — the **team plan**: the 4 roles, the
+   **file/directory ownership map** (updated to the actual backend layout), the
+   execution model, the milestones, and the **status-aware general TODOs**.
+4. **Per-person detailed plans** (in [`team/`](team/)) — each engineer's scope,
    interfaces, and **detailed per-person TODOs**:
    - **[`team/person-1-frontend.md`](team/person-1-frontend.md)** — Frontend & Demo
      Experience (graph, chat, diff/review, drop-off, metrics, provenance, "show your work").
@@ -46,21 +51,29 @@ rollback. See [`README.md`](../README.md) for the full spec.
 | `team/person-3-ai-orchestration.md` | *Person 3's detailed scope + todos* | P3 (+ reference for all) |
 | `team/person-4-governance.md` | *Person 4's detailed scope + todos* | P4 (+ reference for all) |
 
-## The one idea that makes this work
+## The idea that keeps work parallel
 
-**Contracts-first parallelism.** A short shared **Phase 0** freezes every data
-contract and ships a **mock API** plus **fake providers**. After that (Milestone
-**M1**), the four engineers build fully in parallel against mocks — nobody waits on
-Azure or on each other — and because each person owns **disjoint files** (separate
-directories + their own API router file), there are **no merge conflicts**. The
-fakes are swapped for real implementations at integration (M2/M3) behind the same
-interfaces. See `general-plan.md` §8 and `team-plan.md` §2 for the details.
+**Local-first + a live API.** The locked stack runs most of the pipeline **for
+real, offline**: fastembed does embeddings locally and Postgres+pgvector is one
+`docker compose up`. With the backend API already live (README §8B), the four
+workstreams proceed largely in parallel — the frontend builds on the real API, and
+the duplicate/conflict, governance, and metrics work builds on the existing store.
+See `general-plan.md` §8 and `team-plan.md` §2 for ownership details. *(Only the
+`/chat` and `/propose` agents need Azure OpenAI.)*
 
-## Current status
+## Current status (2026-06-23)
 
-- ✅ Product spec (`README.md`) and these planning documents.
-- ⬜ Phase 0 foundation (scaffold, frozen contracts, mock API, fakes) — **not started**.
-- ⬜ Parallel build (P1–P4), integration, demo polish — **not started**.
+- ✅ Product spec (`README.md`) + these planning docs (kept in sync with the code).
+- ✅ **Backend built:** ingestion → processing → embeddings → pgvector retrieval →
+  LangGraph Curator/Guardian agents → FastAPI (`/health`, `/search`, `/documents`,
+  `/tree`, `/graph`, `/documents/{id}`, `/chat`, `/propose`) + CLI scripts.
+- ⬜ **Pending:** duplicate/conflict detection + node health; governance (ACL,
+  approval, provenance, rollback); metrics; verification sandbox; `WS /stream`; and
+  the **entire frontend**.
+
+> See [`implementation-status.md`](implementation-status.md) for the full as-built
+> matrix, then follow the status-aware TODOs in `team-plan.md` §5 and each person's
+> plan under `team/`.
 
 > When the team starts building, follow the milestones in `general-plan.md` §9 and
 > the general TODOs in `team-plan.md` §5, then each person executes their personal

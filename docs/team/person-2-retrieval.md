@@ -2,9 +2,13 @@
 
 Person 2 owns the deterministic retrieval pipeline that turns raw repository documentation into searchable, graph-aware, embedded knowledge for DocGuardian AI.
 
+> **As-built status (2026-06-23):** core retrieval pipeline is implemented; see [../implementation-status.md](../implementation-status.md).
+
 ## Mission
 
-Person 2's mission is to build the retrieval half of deterministic Layers 1–3: ingestion, processing, embeddings, vector indexing, search, duplicate detection, and conflict seeding. This work turns sparse/shallow git repository checkouts into `RawDocument`, `DocChunk`, `GraphEdge`, and `SearchResult` records that the rest of the product can trust. The pipeline consumes no LLM quota and should use model quota only for embeddings through the `EmbeddingProvider` interface. During M1/M2, Person 2 develops against `FakeEmbeddingProvider` plus real git clones so retrieval work can start immediately without waiting for Azure.
+Person 2's mission is to build and maintain the retrieval half of deterministic Layers 1–3: ingestion, processing, embeddings, vector indexing, search, duplicate detection, and conflict seeding. As built today, sparse/shallow git repository checkouts and user drop-off intake become snake_case `RawDocument`, `DocChunk`, and structural `GraphEdge` records, then are embedded into Postgres + pgvector for cosine search. The pipeline consumes no LLM quota; embeddings use the `EmbeddingProvider` ABC with local fastembed (`BAAI/bge-small-en-v1.5`, 384-dim, ONNX, auto-detected dim) by default and Azure only when `EMBEDDING_PROVIDER=azure`.
+
+Duplicate detection and conflict seeding remain Person 2 work, but they are not implemented yet. Only structural `references` edges exist today.
 
 ## Scope — What You Own
 
@@ -12,25 +16,26 @@ Person 2 owns the full path from repository clone metadata to retrieval results:
 
 | Area | Owned paths | Responsibility |
 | --- | --- | --- |
-| Ingestion | `backend/app/ingestion/**` | Sparse/shallow clone, sparse-checkout, repository refresh, commit metadata extraction, `RawDocument` creation, `DocumentAdded` / `DocumentChanged` / `DocumentDeleted` event emission. |
-| Processing | `backend/app/processing/**` | Markdown normalization, front-matter stripping, command/code preservation, heading offset tracking, heading-aware chunking, line/char range calculation, structural link/reference extraction. |
-| Embeddings | `backend/app/ai/embeddings.py` | Embedding orchestration through `EmbeddingProvider`, content-hash skip logic, vector upsert preparation. |
-| Retrieval services | `backend/app/services/retrieval.py` | Hybrid search, keyword fallback, `SearchResult` assembly, ACL-aware filtering once P4's interface is available. |
-| Dedup/conflict services | `backend/app/services/dedup_conflict.py` | Duplicate candidate generation, conflict seed generation, evidence packaging as semantic `GraphEdge` candidates. |
-| Vector adapter | `backend/app/store/vector_*.py` | Local vector index adapter behind the frozen `VectorIndex` interface; in-memory/fake first, local durable adapter next, Azure AI Search/pgvector-compatible adapter later if time permits. |
-| API router | `backend/app/api/ingest.py` | Person 2's ingestion endpoints, especially `POST /ingest/refresh`. |
-| API router | `backend/app/api/search.py` | Person 2's retrieval endpoints, especially `GET /search`. |
+| Ingestion | `backend/app/ingestion/git_ingest.py`, `backend/app/ingestion/intake.py` | Sparse/shallow clone, sparse-checkout, repository refresh, commit metadata extraction, `RawDocument` creation, and user drop-off intake. Refresh event models (`DocumentAdded` / `DocumentChanged` / `DocumentDeleted`) are not built yet. |
+| Processing | `backend/app/processing/processor.py` | Markdown normalization, YAML front-matter stripping, command/code preservation, heading-aware and fence-aware chunking, line range calculation, placeholder char ranges, and structural link/reference extraction. |
+| Embeddings | `backend/app/embeddings/provider.py` | `EmbeddingProvider` ABC, local fastembed default, Azure optional provider, batch embedding for vector load/search. |
+| Storage + vector search | `backend/app/storage/vectorstore.py`, `backend/app/storage/db.py`, `backend/app/storage/queries.py` | Single Postgres instance with pgvector; `documents`, `chunks`, and `edges` tables; `chunks.embedding VECTOR(dim)` with HNSW cosine index; `ON CONFLICT` upserts; `1 - (embedding <=> q)` cosine search. |
+| API surface | `backend/app/main.py` | Current API lives in one FastAPI file: `GET /search` and `POST /documents` are implemented here. There are no per-domain `api/ingest.py` or `api/search.py` router files yet; a future split can move thin routers out of `main.py`. |
+| CLI tooling | `backend/scripts/run_ingest.py`, `backend/scripts/load_vectors.py`, `backend/scripts/search.py`, `backend/scripts/add_file.py` | Verified local ingestion → processing → JSONL, vector loading, semantic search, and user file/paste intake workflows. |
+| Dedup/conflict services | Not implemented yet | Future duplicate candidate generation and conflict seed generation. There is no `backend/app/services/retrieval.py` or `backend/app/services/dedup_conflict.py` today. |
 
 Concrete deliverables inside that scope:
 
-- Implement repository source loading from `repos.config.json` entries.
-- Clone configured sources into `data/<repo-short>` using sparse/shallow git commands.
-- Emit deterministic `RawDocument` records with `commitSha`, `commitDate`, `fetchedAt`, and `contentHash`.
-- Convert each `RawDocument` into stable `DocChunk` records and structural `references` `GraphEdge` records.
-- Embed chunks through `FakeEmbeddingProvider` first, then the real provider behind the same interface.
-- Upsert vectors keyed by `chunkId` and skip unchanged `contentHash` values.
-- Return `SearchResult` records with cosine scores in `[0,1]` and precise citation metadata.
-- Generate `duplicate-of` and `conflicts-with` candidate edges using the thresholds in README §8A.4.
+- [x] Implement repository source loading from `repos.config.json` entries.
+- [x] Clone configured sources into `data/<repo-short>` using sparse/shallow git commands.
+- [x] Emit deterministic `RawDocument` records with `commit_sha`, `commit_date`, `fetched_at`, and `content_hash`.
+- [x] Convert each `RawDocument` into stable `DocChunk` records and structural `references` `GraphEdge` records.
+- [x] Embed chunks through `EmbeddingProvider` using local fastembed by default, with Azure swappable by configuration.
+- [x] Upsert documents, chunks, and edges into Postgres + pgvector using `ON CONFLICT` for idempotency.
+- [x] Return search matches with cosine scores in `[0,1]` and citation metadata via `GET /search`.
+- [ ] Generate `duplicate-of` candidate edges for chunk pairs from different `docId`s with score `>= 0.92`.
+- [ ] Generate `conflicts-with` candidate edges for score `>= 0.85` plus divergent commands/values.
+- [ ] Add an incremental-refresh API endpoint (`POST /ingest/refresh`) and explicit added/changed/deleted event output.
 
 ## What You Must NOT Touch
 
@@ -38,39 +43,36 @@ These files/directories are frozen or owned by other people. Person 2 should req
 
 | Do not touch | Why |
 | --- | --- |
-| `backend/app/models/**` | Frozen Pydantic contracts after M1. If `RawDocument`, `DocChunk`, `GraphEdge`, `SearchResult`, or refresh events need changes, ask the director to update models and mirrored TypeScript together. |
-| `frontend/src/lib/types.ts` | Frozen TypeScript mirror of backend contracts. Contract drift breaks serialization across layers. |
-| `backend/app/main.py` | Router wiring is director-owned after Phase 0. Person 2 owns router files, not app-level registration. |
-| Other people's routers | `backend/app/api/documents.py`, `backend/app/api/chat.py`, `backend/app/api/graph.py`, `backend/app/api/proposals.py`, `backend/app/api/metrics.py`, `backend/app/api/stream.py` are owned by P3/P4. |
+| `backend/app/models.py` contract changes without coordination | Core Pydantic contracts are a single snake_case file today (`RawDocument`, `DocChunk`, `GraphEdge`, `EdgeType`). If fields need changes, coordinate because API DTOs and frontend assumptions must stay aligned. |
+| `frontend/src/lib/types.ts` | No mirrored frontend contract exists yet in this backend slice; future TypeScript types must stay aligned with API DTOs. |
+| `backend/app/main.py` route ownership without coordination | Current `GET /search` and `POST /documents` live here. Person 2 can document needs for a future router split, but app-level endpoint registration is director-owned. |
+| Future router/service split files | `backend/app/api/ingest.py`, `backend/app/api/search.py`, `backend/app/services/retrieval.py`, and `backend/app/services/dedup_conflict.py` do not exist yet. Create or move them only through an agreed refactor. |
 | Other people's directories | Do not edit P1 frontend implementation, P3 agent/orchestrator/provider code outside agreed interfaces, or P4 governance/store/sandbox services. |
 
-If an integration requires a frozen contract field, a `main.py` route registration, a new store method, or a frontend type adjustment, document the request and hand it to the director. Continue against fixtures/fakes until the shared interface is updated.
+If integration requires a contract field, a `main.py` route registration, a new store method, or a frontend type adjustment, document the request and hand it to the director. Continue against the current CLI/API path until the shared interface is updated.
 
 ## Inputs (Consumed, Mocked) & Outputs (Produced)
 
 | Contract / artifact | Direction for P2 | Real or mocked by milestone | Source / destination | Notes |
 | --- | --- | --- | --- | --- |
-| `repos.config.json` | Consumed | Real in M1; entries may be minimal seed repos | Director-owned config, read by ingestion | Single source of truth for repo slug, clone URL, branch, `docGlobs`, and refresh interval. P2 may propose entries but should not change frozen config after M1 without director approval. |
-| Git repository checkout | Consumed | Real from the start | `data/<repo-short>` | Use sparse/shallow clone; no GitHub API dependency, no tokens, no deep clone. |
-| `RawDocument` | Produced | Fixtures validated in Phase 0; real records by M2 | Ingestion → Processing / P4 store | One record per selected file. Must include stable `docId`, repo/path/branch, raw UTF-8 content, byte size, commit metadata, `fetchedAt`, and `contentHash`. |
-| `DocumentAdded` | Produced | Fixture in M1; real refresh event by M2/M3 | Ingestion refresh → Processing / graph | Emitted when a selected doc path appears. Carries `docId` and full `raw` record. |
-| `DocumentChanged` | Produced | Fixture in M1; real refresh event by M2/M3 | Ingestion refresh → Processing / graph | Emitted when `commitSha` and/or `contentHash` changed. Carries `previousCommitSha` and new `raw`. |
-| `DocumentDeleted` | Produced | Fixture in M1; real refresh event by M2/M3 | Ingestion refresh → P4 graph/store | Emitted when a path disappears. Carries `lastKnownCommitSha`; P4 marks node stale/broken. |
-| `DocChunk` | Produced | Fixture validated in Phase 0; real chunks by M2 | Processing → embeddings/search/P3 evidence | Stable `chunkId`, inherited `docId`/`commitSha`/`commitDate`, heading path, exact `lineRange`, exact `charRange`, `containsCommands`, token count, and chunk `contentHash`. |
-| `GraphEdge` (`references`) | Produced | Fixture in M1; real structural edges by M2 | Processing → P4 graph store | Link extractor emits structural `references` edges only. Semantic `duplicate-of` and `conflicts-with` edges are generated after embeddings/similarity. |
-| `GraphEdge` (`duplicate-of`) | Produced | Candidate fixtures in M1; real candidates by M2/M3 | Dedup service → P4 graph store / P3 | Chunk pairs from different `docId`s with score `>= 0.92`; edge weight equals score. |
-| `GraphEdge` (`conflicts-with`) | Produced | Candidate fixtures in M1; real seeds by M2/M3 | Conflict seeding → P4 graph store / P3 | Similar chunks with score `>= 0.85` plus divergent extracted commands/values. P3 may later confirm or resolve with agents. |
-| `EmbeddingProvider` | Consumed | `FakeEmbeddingProvider` in M1/M2; Azure provider in integration | P3/provider interface | Never block on Azure. Code to the provider interface, not to Azure-specific SDK behavior. |
-| `VectorIndex` | Consumed/implemented | Fake/in-memory in M1; local durable in M2; real adapter optional in M3 | Store interface | P2 owns `vector_*.py` adapters behind the frozen interface. |
-| Vector record | Produced internally | Real local record by M2 | Embeddings → vector index | Keyed by `chunkId`; includes vector, model, dim, text, metadata, heading path, line range, commit SHA, ACL tags when available. |
-| `SearchResult` | Produced | Fixture in M1; real by M2 | Retrieval → P3 orchestrator/chat and `/search` | Query plus scored matches, sorted descending, with cosine score in `[0,1]`, text, `chunkId`, `docId`, `lineRange`, and `commitSha`. |
+| `repos.config.json` | Consumed | Real | `backend/repos.config.json`, read by `app.config` | Four repos are configured: `garnet`, `playwright`, `onnxruntime`, and `vscode`, each with `shortName`, `sparsePaths`, and `docGlobs`. |
+| Git repository checkout | Consumed | Real from the start | `data/<repo-short>` | Uses `git clone --depth 1 --filter=blob:none --sparse --branch <branch>` and sparse checkout; no GitHub API dependency, no tokens, no deep clone. |
+| `RawDocument` | Produced | Real | Ingestion → processing/storage | Core model is snake_case in `app/models.py`. One record per selected file includes stable `doc_id`, repo/path/branch, raw UTF-8 content, byte size, commit metadata, `fetched_at`, and `content_hash`. |
+| `DocumentAdded` / `DocumentChanged` / `DocumentDeleted` | Produced | Not built yet | Future refresh → processing / graph | Explicit refresh event models and an incremental-refresh API are still pending. Current refresh updates the shallow checkout and re-emits raw documents through CLI processing. |
+| `DocChunk` | Produced | Real | Processing → embeddings/search/storage | Stable `chunk_id`, inherited `doc_id`/`commit_sha`/`commit_date`, heading path, source `line_range`, placeholder `char_range`, `contains_commands`, word-count `token_count`, and chunk `content_hash`. |
+| `GraphEdge` (`references`) | Produced | Real | Processing → `edges` table / graph queries | Link extractor emits structural `references` edges only from same-repo markdown links. |
+| `GraphEdge` (`duplicate-of`) | Produced | Not built yet | Future dedup service → graph/P3 | Intended threshold: chunk pairs from different `docId`s with score `>= 0.92`; edge weight equals score. |
+| `GraphEdge` (`conflicts-with`) | Produced | Not built yet | Future conflict seeding → graph/P3 | Intended threshold: similar chunks with score `>= 0.85` plus divergent extracted commands/values. |
+| `EmbeddingProvider` | Consumed | Real | `app/embeddings/provider.py` | ABC with `LocalEmbeddingProvider` as default fastembed/ONNX provider; `AzureEmbeddingProvider` when `EMBEDDING_PROVIDER=azure`. |
+| Vector record | Produced internally | Real | Embeddings → Postgres `chunks` table | Keyed by `chunk_id`; includes vector, text, metadata, heading path, line range, commit SHA. Vector dimension is `VECTOR(dim)` from the active provider. |
+| `SearchResult` / search matches | Produced | Real | `GET /search`, `scripts/search.py`, P3 retrieval node | API exposes camelCase DTOs from `main.py`; storage/search internals are snake_case. Results are sorted by pgvector cosine distance and scored as `1 - (embedding <=> q)`. |
 
 Minimal contract shapes to keep in mind while building fixtures and tests:
 
 ```jsonc
-// DocChunk shape, not application code
+// DocChunk shape in API-facing camelCase terms; core app/models.py fields are snake_case
 {
-  "chunkId": "playwright/docs/src/intro.md#Installation#0",
+  "chunkId": "playwright/docs/src/intro.md#installation#0",
   "docId": "playwright/docs/src/intro.md",
   "repo": "microsoft/playwright",
   "headingPath": ["Getting Started", "Installation"],
@@ -78,7 +80,7 @@ Minimal contract shapes to keep in mind while building fixtures and tests:
   "text": "npm init playwright@latest ...",
   "tokenCount": 612,
   "lineRange": [12, 41],
-  "charRange": [180, 1422],
+  "charRange": [0, 1242], // placeholder today, not true source offsets
   "containsCommands": true,
   "commitSha": "a1b2c3...",
   "commitDate": "2026-05-18T14:22:07Z",
@@ -87,12 +89,12 @@ Minimal contract shapes to keep in mind while building fixtures and tests:
 ```
 
 ```jsonc
-// SearchResult shape, not application code
+// Search response shape in API-facing camelCase terms
 {
   "query": "how do I run playwright tests in CI",
   "matches": [
     {
-      "chunkId": "playwright/docs/src/ci.md#GitHub-Actions#0",
+      "chunkId": "playwright/docs/src/ci.md#github-actions#0",
       "docId": "playwright/docs/src/ci.md",
       "score": 0.8917,
       "text": "npx playwright test ...",
@@ -107,100 +109,105 @@ Minimal contract shapes to keep in mind while building fixtures and tests:
 
 | Person / system | P2 consumes | P2 provides | Milestone expectation |
 | --- | --- | --- | --- |
-| Director / Phase 0 foundation | Frozen Pydantic models, mirrored TypeScript contracts, router registration, `repos.config.json`, `FakeEmbeddingProvider`, `VectorIndex` interface, fixture examples. | Contract review feedback for `RawDocument`, refresh events, `DocChunk`, `GraphEdge`, and `SearchResult`. | M1 freezes contracts and mock API. P2 should validate fixtures against README §8A examples before building real services. |
-| P3 — Agent Orchestration & AI Reasoning | `EmbeddingProvider` interface and fake/real provider implementations; any agreed reranking/query conventions. | Real `SearchResult` records for Curator/chat RAG; duplicate/conflict candidates with chunk IDs and evidence. | M1: P3 consumes sample `SearchResult` fixtures. M2: P3 can switch to P2's real retrieval endpoint/service. |
-| P4 — Governance, Verification & Metrics | Store/ACL interfaces, graph/document persistence methods, optional permission tags for query-time filtering. | `RawDocument`/document records, `DocChunk` metadata, structural `references` edges, semantic candidate edges, refresh deletion events. | M1/M2: P2 can use fake/in-memory stores. M3: persist edges and document records through P4's SQLite-backed store interface. |
-| P1 — Frontend & Demo Experience | Search and graph expectations through frozen API contracts only. | `/search` results and graph edges indirectly through P4's graph API. | P1 should remain mock-driven until M3. P2 should not edit frontend files. |
-| Git CLI / repositories | Sparse/shallow clones, file contents, commit metadata. | Local `data/<repo-short>` working copies and ingestion events. | Real from the start. Scope aggressively to docs folders to avoid huge checkouts. |
-| Embedding backend | Fake embeddings first; Azure embeddings during integration. | Chunk text and metadata for embedding/upsert. | M1/M2: deterministic fake vectors are enough for tests. M2/M3: config switch to real Azure behind the same `EmbeddingProvider`. |
+| Director / Phase 0 foundation | `app/models.py`, `app/main.py`, `repos.config.json`, Postgres + pgvector config. | Contract review feedback for `RawDocument`, refresh events, `DocChunk`, `GraphEdge`, and search DTOs. | Core retrieval is implemented; future work should keep snake_case core models and camelCase API DTOs aligned. |
+| P3 — Agent Orchestration & AI Reasoning | `EmbeddingProvider` interface and query conventions. | Real search matches for Curator/chat RAG; future duplicate/conflict candidates with chunk IDs and evidence. | P3 can already consume pgvector search through the retrieval node/API; semantic candidate edges are still pending. |
+| P4 — Governance, Verification & Metrics | Store/ACL interfaces, graph/document persistence needs, optional permission tags for query-time filtering. | `documents`, `chunks`, structural `references` edges, and future semantic candidate edges. | Current persistence is direct Postgres tables, not a separate P4-managed store. ACL/provenance/governance are pending. |
+| P1 — Frontend & Demo Experience | Search and graph expectations through API contracts only. | `/search` results and graph edges indirectly through `main.py` endpoints. | P1 should consume camelCase API DTOs; no frontend exists yet. |
+| Git CLI / repositories | Sparse/shallow clones, file contents, commit metadata. | Local `data/<repo-short>` working copies and processed JSONL. | Real from the start. Scope aggressively to docs folders to avoid huge checkouts. |
+| Embedding backend | Local fastembed by default; Azure embeddings only by config. | Chunk text and metadata for embedding/upsert. | Ingestion/search do not need Azure. Azure is required only if embeddings are explicitly switched or for P3 chat/propose agents. |
 
 Real vs mocked by milestone:
 
-| Milestone | Real | Mocked / fake |
+| Milestone | Real | Mocked / fake or pending |
 | --- | --- | --- |
-| M1 | Contract fixtures, route shells, `repos.config.json` shape, tooling. | Embeddings, vector index, store persistence, P3/P4 consumers. |
-| M2 | Sparse/shallow clones, `RawDocument` creation, processing, chunking, fake-embedding-backed search, duplicate/conflict candidate logic. | Azure embeddings may still be fake; P4 persistence may still be in-memory. |
-| M3 | Real router service calls, P4 SQLite store interface, real `SearchResult` consumed by P3, persisted graph/doc records consumed by P4/P1. | Only optional cloud services remain replaceable by local adapters. |
-| M4 | Seed repo ingestion, planted duplicate/conflict fixtures, incremental refresh demo. | Fallback demo data may remain available for rehearsal resilience. |
+| M1 | Contract review, `repos.config.json`, CLI tooling, core models. | Refresh events, duplicate/conflict fixtures. |
+| M2 | Sparse/shallow clones, `RawDocument` creation, heading-aware/fence-aware processing, chunking, structural references, local fastembed-backed pgvector search. | Duplicate/conflict candidate logic; true char offsets; chunk overlap. |
+| M3 | `GET /search`, `POST /documents`, Postgres + pgvector persistence, real search consumed by agents. | Per-domain router split, ACL filtering, incremental refresh API, governance/provenance tables. |
+| M4 | Four configured seed repos (`garnet`, `playwright`, `onnxruntime`, `vscode`) can run through CLI/API path. | Planted duplicate/conflict edges and refresh demo still need implementation. |
 
 ## Detailed TODOs
 
 ### Phase 0 — Foundation participation
 
-- [ ] Review README §8A.2–§8A.4 and validate that `RawDocument`, `DocumentAdded`, `DocumentChanged`, `DocumentDeleted`, `DocChunk`, `GraphEdge`, and `SearchResult` fixtures match the exact camelCase field names.
-- [ ] Help author or review Phase 0 fixture JSON for `RawDocument` with `docId`, `repo`, `path`, `branch`, `content`, `byteSize`, `encoding`, commit metadata, `fetchedAt`, and `contentHash`.
-- [ ] Help author or review `DocChunk` fixtures with heading paths, ordinal values, line ranges, char ranges, `containsCommands`, inherited `commitSha`/`commitDate`, and stable chunk `contentHash` values.
-- [ ] Help author or review `GraphEdge` fixtures for `references`, `duplicate-of`, and `conflicts-with`, ensuring the `from` / `to` / `type` / `weight` quartet matches frontend graph needs.
-- [ ] Help author or review `SearchResult` fixtures so P3 can build Curator/chat RAG without waiting for real indexing.
-- [ ] Validate `FakeEmbeddingProvider` behavior is deterministic for the same chunk text so tests are repeatable.
-- [ ] Confirm `VectorIndex` interface has enough operations for upsert-by-`chunkId`, search, delete-by-doc, and skip/metadata lookup without leaking adapter-specific details.
-- [ ] Set up expected local data layout: `data/<repo-short>` working copies, with `data/` gitignored by Phase 0 tooling.
-- [ ] Propose initial `repos.config.json` entries for 1–2 small doc scopes, such as focused `microsoft/playwright` docs and a scoped `microsoft/garnet` documentation subset.
-- [ ] Agree with the director on how Person 2 router stubs expose `POST /ingest/refresh` and `GET /search` while `backend/app/main.py` remains director-owned.
+- [x] Review README §8A.2–§8A.4 and align planning docs to the as-built snake_case core models plus camelCase API DTOs.
+- [x] Help author or review `RawDocument` shape with `doc_id`, `repo`, `path`, `branch`, `content`, `byte_size`, `encoding` assumptions, commit metadata, `fetched_at`, and `content_hash`.
+- [x] Help author or review `DocChunk` shape with heading paths, ordinal values, line ranges, placeholder char ranges, `contains_commands`, inherited `commit_sha`/`commit_date`, and stable chunk `content_hash` values.
+- [x] Help author or review `GraphEdge` fixtures for `references` with the `from` / `to` / `type` / `weight` quartet matching frontend graph needs.
+- [x] Help author or review search response DTOs so P3 can build Curator/chat RAG over real retrieval.
+- [x] Validate local fastembed provider behavior and dimension detection through `EmbeddingProvider`.
+- [x] Confirm Postgres + pgvector has enough operations for upsert-by-`chunk_id`, search, and metadata lookup through `vectorstore.py`.
+- [x] Set up expected local data layout: `data/<repo-short>` working copies and `data/_processed/<shortName>/` JSONL outputs.
+- [x] Configure initial `repos.config.json` entries for `garnet`, `playwright`, `onnxruntime`, and `vscode`.
+- [ ] Agree with the director on if/when to split `GET /search` and future `POST /ingest/refresh` out of `backend/app/main.py` into router files.
 
 ### Core Build
 
 #### Ingestion (Layer 1)
 
-- [ ] Implement source loading from `repos.config.json` with validation for `repo`, `url`, `branch`, `docGlobs`, and `refreshIntervalMinutes`.
-- [ ] Derive safe local checkout names under `data/<repo-short>`; avoid collisions between repos with the same short name by documenting/handling a deterministic naming rule.
-- [ ] Run the metadata-only clone procedure for new repos:
+- [x] Implement source loading from `repos.config.json` with validation for `repo`, `shortName`, `url`, `branch`, `sparsePaths`, `docGlobs`, and `refreshIntervalMinutes`.
+- [x] Derive safe local checkout names under `data/<repo-short>` using `shortName`.
+- [x] Run the metadata-only clone procedure for new repos:
 
   ```powershell
-  git clone --depth 1 --filter=blob:none --sparse <url> data/<repo>
-  git sparse-checkout set <docGlobs>
+  git clone --depth 1 --filter=blob:none --sparse --branch <branch> <url> data\<repo-short>
+  git sparse-checkout set <sparsePaths>
   ```
 
-- [ ] Keep sparse-checkout scoped to documentation globs only; never expand to full large repos such as VS Code or ONNX Runtime unless the director explicitly approves a demo scope change.
-- [ ] Enumerate selected markdown files deterministically, excluding binary files, generated output, vendored dependency folders, and paths outside configured doc globs.
-- [ ] Extract per-file commit metadata with `git log -1 --format="%H|%an|%ae|%cI" -- <path>` and parse `commitSha`, `commitAuthor`, `commitEmail`, and `commitDate`.
-- [ ] Compute `byteSize`, `encoding`, `fetchedAt`, and `contentHash` as `sha256` over raw UTF-8 content.
-- [ ] Build one `RawDocument` per selected file with stable `docId` format `<repo-short>/<path>` or the contract-approved equivalent from Phase 0.
-- [ ] Implement refresh with `git fetch --depth 1 origin` plus `git reset --hard origin/<branch>` and compare prior vs current file SHAs/hashes.
-- [ ] Emit `DocumentAdded`, `DocumentChanged`, and `DocumentDeleted` events from refresh; route added/changed documents to processing and deleted documents to P4's stale/broken node handling interface.
+- [x] Keep sparse-checkout scoped to configured paths; current repos use `sparsePaths` and `docGlobs` from `repos.config.json`.
+- [x] Enumerate selected documentation files deterministically and filter by configured `docGlobs`.
+- [x] Extract per-file commit metadata with `git log -1 --format=%H%x1f%an%x1f%ae%x1f%cI -- <path>` and parse `commit_sha`, `commit_author`, `commit_email`, and `commit_date`.
+- [x] Compute `byte_size`, `fetched_at` via model default, and `content_hash` as `sha256` over raw UTF-8 bytes.
+- [x] Build one `RawDocument` per selected file with stable `doc_id` format `<repo-short>/<path>`.
+- [x] Implement checkout refresh with `git fetch --depth 1 origin <branch>` plus `git reset --hard origin/<branch>`.
+- [ ] Emit explicit `DocumentAdded`, `DocumentChanged`, and `DocumentDeleted` events from refresh; route deleted documents to stale/broken node handling.
 
 #### Processing (Layer 2)
 
-- [ ] Build a pure normalizer that returns identical output for identical `RawDocument` input, regardless of runtime environment.
-- [ ] Strip YAML/front-matter without shifting reported source line ranges incorrectly; maintain mapping from normalized text back to original lines.
-- [ ] Preserve headings, fenced code blocks, command blocks, inline commands, and shell snippets verbatim because verification later executes command text.
-- [ ] Resolve relative markdown links and images to target `docId` values where the target exists in the same ingested corpus.
-- [ ] Record heading text, heading hierarchy, start/end character offsets, and source line numbers for each heading.
-- [ ] Implement heading-aware chunking with target size around 500–800 tokens and approximately 80-token overlap.
-- [ ] Ensure chunks inherit `docId`, `repo`, `commitSha`, `commitDate`, heading path, and exact source line range from the parent document.
-- [ ] Generate stable `chunkId` values using `docId`, heading slug/path, and ordinal; the same source document must produce the same IDs across runs.
-- [ ] Detect whether each chunk contains commands and set `containsCommands` accurately.
-- [ ] Compute chunk `contentHash` over chunk text so embedding upsert can skip unchanged chunks independently from unchanged documents.
+- [x] Build pure processing functions that return identical output for identical `RawDocument` input.
+- [x] Strip YAML/front-matter before sectioning.
+- [x] Preserve headings and fenced code blocks; headings inside fences are ignored.
+- [x] Resolve same-repo relative markdown links ending in `.md` or `.mdx` to target `doc_id` values.
+- [x] Record heading text and heading hierarchy for chunks.
+- [x] Implement heading-aware chunking with target size around 800 approximate tokens and split oversized sections (>~1000 words) by blank-line paragraphs.
+- [ ] Implement approximately 80-token inter-chunk overlap; current implementation has no overlap.
+- [x] Ensure chunks inherit `doc_id`, `repo`, `commit_sha`, `commit_date`, heading path, and source line range from the parent document.
+- [x] Generate stable `chunk_id` values using `doc_id`, heading slug, and ordinal.
+- [x] Detect fenced code blocks and set `contains_commands` when chunks contain triple-backtick or tilde fences.
+- [x] Compute chunk `content_hash` over chunk text.
+- [ ] Compute true source `char_range`; current value is the placeholder `(0, len(block))`.
 
 #### Link extractor
 
-- [ ] Parse explicit markdown links, reference-style links, relative paths, anchors, image targets, and "see also" style references.
-- [ ] Normalize link targets to corpus `docId`s when possible; retain unresolved-link evidence for later broken-link/health metrics if the contract supports it.
-- [ ] Emit only structural `references` `GraphEdge` records from Layer 2; do not create semantic `duplicate-of` or `conflicts-with` edges before embeddings exist.
-- [ ] Populate edge evidence with reason, anchor text, and source `lineRange`.
-- [ ] Use `createdBy: "link-extractor"` and propagate the source document `commitSha`.
-- [ ] Make edge IDs deterministic, for example `<from>-><to>:references`, with a disambiguator only if multiple edges between the same docs must be preserved.
+- [x] Parse explicit inline markdown links.
+- [x] Normalize same-repo relative markdown link targets to corpus-style `doc_id`s when possible.
+- [x] Emit only structural `references` `GraphEdge` records from Layer 2; semantic `duplicate-of` and `conflicts-with` edges are not created yet.
+- [x] Populate edge evidence with reason, anchor text, and source line.
+- [x] Use `created_by: "link-extractor"` and propagate the source document `commit_sha`.
+- [x] Make edge IDs deterministic as `<from>-><to>:references`, deduplicated per target document.
+- [ ] Parse reference-style links, image targets beyond inline syntax, unresolved-link evidence, and "see also" prose references.
 
 #### Embeddings + Vector Index (Layer 3 half)
 
-- [ ] Implement chunk embedding orchestration in `backend/app/ai/embeddings.py` against the `EmbeddingProvider` interface.
-- [ ] Use `FakeEmbeddingProvider` by default for local/M1/M2 development; never block ingestion/search tests on Azure availability.
-- [ ] Prepare vector records keyed by `chunkId` with vector, model, dimension, text, `docId`, repo, heading path, line range, `commitSha`, and ACL tags when P4 exposes them.
-- [ ] Before embedding, check whether the existing vector metadata has the same chunk `contentHash`; skip unchanged chunks.
-- [ ] Upsert changed/new chunks by `chunkId`; delete vectors for chunks belonging to `DocumentDeleted` docs.
-- [ ] Keep adapter-specific code inside `backend/app/store/vector_*.py` and expose only the `VectorIndex` interface to services.
-- [ ] Normalize or validate vector dimensions so fake and real embedding providers cannot silently corrupt index records.
-- [ ] Add tests proving the same chunks produce the same fake embeddings and the same vector upsert set across repeated runs.
+- [x] Implement chunk embedding orchestration in `backend/app/embeddings/provider.py` against the `EmbeddingProvider` ABC.
+- [x] Use local fastembed (`BAAI/bge-small-en-v1.5`, 384-dim ONNX, auto-detected dim) by default; do not require Azure for ingestion/search.
+- [x] Support Azure embeddings through `EMBEDDING_PROVIDER=azure` without changing storage/search code.
+- [x] Prepare vector records keyed by `chunk_id` with vector, text, `doc_id`, repo, heading path, line range, `commit_sha`, and metadata.
+- [ ] Before embedding, skip unchanged chunks by comparing existing vector metadata with the same chunk `content_hash`; current loader re-embeds loaded chunks.
+- [x] Upsert changed/new chunks by `chunk_id` via `ON CONFLICT`.
+- [ ] Delete vectors for chunks belonging to `DocumentDeleted` docs.
+- [x] Keep storage-specific code inside `backend/app/storage/vectorstore.py` and schema code inside `backend/app/storage/db.py`.
+- [x] Normalize or validate vector dimensions by creating `chunks.embedding VECTOR(dim)` from the active provider's detected dimension.
+- [ ] Add tests proving repeated runs produce the same upsert set; no pytest/ruff/black tooling is configured yet.
 
 #### Hybrid Search
 
-- [ ] Implement `GET /search` service behavior that accepts a query, optional repo/doc scope, top-k, and later ACL context if P4 provides it.
-- [ ] Query the vector index first for semantic similarity and return cosine scores normalized to `[0,1]`.
+- [x] Implement `GET /search` behavior that accepts a query, optional repo scope, and top-k.
+- [x] Query pgvector first for semantic similarity and return cosine scores normalized as `1 - (embedding <=> q)`.
 - [ ] Add keyword/BM25-like fallback or local text fallback for cases where embeddings are missing, empty, or low-confidence.
-- [ ] Merge vector and keyword results deterministically, deduplicating by `chunkId` and sorting primarily by score descending.
-- [ ] Return `SearchResult` with query text plus matches containing `chunkId`, `docId`, score, text excerpt/full chunk text per contract, `lineRange`, and `commitSha`.
-- [ ] Preserve citation fidelity: a user-visible result must always be traceable to an exact document, line range, and commit SHA.
-- [ ] Handle empty corpus, empty query, inaccessible docs, and deleted/stale docs explicitly rather than returning misleading matches.
+- [x] Return deterministic vector results ordered by cosine distance.
+- [x] Return search response with query text plus matches containing `chunkId`, `docId`, score, text, `lineRange`, and `commitSha` via camelCase DTOs.
+- [x] Preserve citation fidelity to document ID, line range, and commit SHA where available.
+- [ ] Handle deleted/stale docs and ACL-inaccessible docs explicitly once governance/ACL exists.
 
 #### Duplicate Detection
 
@@ -224,76 +231,83 @@ Real vs mocked by milestone:
 
 #### API routers (`/ingest/refresh`, `/search`)
 
-- [ ] Replace Phase 0 mock bodies in `backend/app/api/ingest.py` with calls into the ingestion refresh service once M1 contracts are frozen.
-- [ ] Expose `POST /ingest/refresh` for one repo, all configured repos, or an explicit config scope depending on the Phase 0 route contract.
+- [ ] Create or split future `backend/app/api/ingest.py` only if the team decides to move routes out of `main.py`.
+- [ ] Expose `POST /ingest/refresh` for one repo, all configured repos, or an explicit config scope; this endpoint is not built yet.
 - [ ] Return refresh summaries that include counts of added/changed/deleted/unchanged documents and any errors per repo without leaking local absolute paths.
 - [ ] Route added/changed refresh events through processing, embedding, and vector upsert within the job model agreed by the team.
-- [ ] Replace Phase 0 mock bodies in `backend/app/api/search.py` with retrieval service calls.
-- [ ] Expose `GET /search` returning `SearchResult` exactly, including deterministic ordering and valid score bounds.
-- [ ] Validate inputs and return useful errors for missing query, invalid top-k, unknown repo scope, or corpus not ingested.
-- [ ] Keep router files thin: validation and response assembly belong there; clone/chunk/embed/search logic belongs in services.
+- [x] Implement `GET /search` in `backend/app/main.py` with real pgvector retrieval.
+- [x] Expose `GET /search` returning query plus matches with deterministic ordering and valid score bounds.
+- [x] Validate inputs enough for current API defaults (`q`, optional `repo`, `k`).
+- [ ] Keep future router files thin if/when they are created; clone/chunk/embed/search logic should remain in ingestion/processing/embedding/storage modules.
 
 ### Integration (M2/M3)
 
-- [ ] Swap `FakeEmbeddingProvider` to the real Azure-backed embedding provider through configuration only; no service code should depend on Azure-specific classes.
-- [ ] Run a small end-to-end ingestion using fake embeddings first, then real embeddings, and compare that contract shapes remain identical even if vector scores differ.
-- [ ] Expose real `SearchResult` records to P3's orchestrator/chat flow so Curator can reason over real retrieved chunks instead of fixtures.
-- [ ] Provide P3 with retrieval behavior notes: score range, top-k defaults, empty result handling, duplicate/conflict candidate semantics, and citation fields.
-- [ ] Persist `RawDocument` / document record metadata through P4's store interface once it is available, without importing P4 implementation details directly.
-- [ ] Persist structural `references` edges and semantic candidate edges to P4's graph store through the agreed interface.
-- [ ] Integrate deletion refresh events with P4's stale/broken node handling and vector deletion.
-- [ ] Enforce ACL filtering at retrieval time once P4 exposes permission context; inaccessible chunks must not appear in `SearchResult` or downstream citations.
-- [ ] Coordinate with P4 on provenance fields so every stored document/chunk/edge retains `commitSha` and commit date.
-- [ ] Run backend quality gates for touched modules: `ruff check`, `black --check`, and `pytest -q`.
+- [x] Make embedding provider swappable from local fastembed to Azure through configuration only; service code does not depend on Azure-specific classes.
+- [x] Run small end-to-end ingestion/load/search paths through CLI scripts (`run_ingest`, `load_vectors`, `search`) using real providers/storage.
+- [x] Expose real search records to P3's orchestrator/chat flow so Curator can reason over real retrieved chunks instead of fixtures.
+- [x] Provide P3 with retrieval behavior notes through implementation status: score range, top-k defaults, empty result handling, and citation fields.
+- [x] Persist document records and chunks directly in Postgres tables.
+- [x] Persist structural `references` edges in the `edges` table.
+- [ ] Persist semantic `duplicate-of` and `conflicts-with` candidate edges; generation is not implemented yet.
+- [ ] Integrate deletion refresh events with stale/broken node handling and vector deletion.
+- [ ] Enforce ACL filtering at retrieval time once P4 exposes permission context; inaccessible chunks must not appear in search results or downstream citations.
+- [ ] Coordinate with P4 on provenance/audit/approval tables; only document/chunk/edge provenance fields exist today.
+- [ ] Run backend quality gates for touched modules when tooling exists; currently requirements have no configured ruff/black/pytest gates.
 
 ### Demo Polish (M4)
 
-- [ ] Ingest 1–2 seed repositories from the approved hackathon corpus, scoped to reliable documentation folders rather than whole repos.
-- [ ] Prefer small, high-signal demo scopes such as Playwright testing/setup docs and Garnet getting-started/operations docs unless the director chooses a different seed corpus.
+- [x] Configure four seed repositories from the approved corpus: Garnet, Playwright, ONNX Runtime, and VS Code.
+- [x] Prefer scoped documentation folders through `sparsePaths` and `docGlobs` rather than whole full-history clones.
 - [ ] Ensure planted duplicate fixtures produce `duplicate-of` candidates at or above `0.92` with clear evidence and stable graph edges.
 - [ ] Ensure planted conflict fixtures produce `conflicts-with` seeds at or above `0.85` plus divergent command/value evidence.
 - [ ] Prepare an incremental refresh demo: change/add/delete a doc in the controlled seed source or fixture path, run refresh, and show added/changed/deleted counts.
-- [ ] Verify re-running ingestion with unchanged `contentHash` skips re-processing and re-embedding, and be ready to explain the idempotency story during the demo.
+- [x] Verify re-running ingestion/loading uses stable IDs and `ON CONFLICT` upserts for idempotency.
+- [ ] Add content-hash skip logic so unchanged chunks skip re-embedding, not just duplicate row creation.
 - [ ] Create a fallback retrieval dataset using the same contracts in case live clone/network access fails during rehearsal.
-- [ ] Confirm `/search` returns stable, readable results for the demo questions used by P1/P3.
-- [ ] Confirm P4 graph view receives enough `GraphEdge` and document metadata to color duplicate/conflict/reference relationships.
+- [x] Confirm `/search` returns stable, readable results for demo questions once vectors are loaded.
+- [x] Confirm P4 graph view can receive structural `references` edge and document metadata.
 - [ ] Rehearse the 9-step demo flow with P1/P3/P4 and note exact queries or refresh actions that reliably trigger the story.
 
 ## Key Design Rules & Gotchas
 
 | Rule / gotcha | What to do | Why it matters |
 | --- | --- | --- |
-| Idempotency is mandatory | Same `RawDocument` must yield the same normalized text, chunks, chunk IDs, content hashes, edges, and vector upsert decisions. | Team-plan §6 requires unchanged `contentHash` to be a no-op; repeated demo runs must not create duplicate records. |
-| Preserve commands verbatim | Do not reformat fenced code, shell snippets, or inline commands during normalization. | Verification and conflict seeding rely on exact commands. Rewriting `npm run test` into prose destroys evidence. |
-| Citations need exact ranges | Maintain original source line ranges and char ranges through front-matter stripping, normalization, and chunking. | P1/P3 need evidence-backed answers and highlights; P4 provenance must trace to exact lines and commits. |
-| Propagate provenance | Carry `commitSha` and `commitDate` from `RawDocument` into every chunk, vector record, edge, and search match. | Node health, verification stamps, provenance, and trust all depend on exact commit metadata. |
-| Sparse-checkout scope matters | Keep `docGlobs` tight and clone with `--depth 1 --filter=blob:none --sparse`. | Large repos like `microsoft/vscode` and `microsoft/onnxruntime` can be huge; broad clones risk slow demos and wasted disk. |
-| `repos.config.json` is config-driven | Treat source onboarding as a config edit, not a code change. | General-plan §7 and team-plan §6 make configuration-driven sources a cross-cutting rule. |
-| Thresholds are fixed | Duplicate: different `docId`s and `score >= 0.92`. Conflict seed: `score >= 0.85` plus divergent commands/values. | Stable thresholds make demo behavior explainable and prevent noisy graph edges. |
-| Structural vs semantic edges differ | Link extractor emits only `references`; embeddings/dedup/conflict services emit semantic candidates later. | Keeps Layer 2 deterministic and avoids mixing link parsing with similarity reasoning. |
-| Do not call LLMs | P2 deterministic services should not invoke Curator or Guardian. | The architecture budgets model quota for P3 agents; P2 consumes only embedding quota through the provider. |
-| Fake first | Use `FakeEmbeddingProvider` and fake/in-memory vector index for tests and local development. | M1/M2 parallelism depends on not waiting for Azure credentials or quota. |
-| Contracts are sacred | Use camelCase field names and frozen model types exactly. | Contract drift silently breaks P1/P3/P4 and the mock-to-real swap. |
-| Do not leak local paths | API responses should use repo-relative paths and `docId`s, not local machine absolute paths under `data/`. | Keeps responses portable and avoids exposing implementation details. |
-| Deleted docs need cleanup | On `DocumentDeleted`, remove or stale-mark vectors/chunks and notify P4's store/graph layer. | Otherwise search can cite deleted content and graph health becomes misleading. |
-| Empty states are real states | Handle empty corpus, empty query, no vector index, no matches, and inaccessible docs. | Team-plan §7 requires edge cases, not just happy paths. |
+| Idempotency is mandatory | Same `RawDocument` must yield the same normalized text, chunks, chunk IDs, content hashes, edges, and Postgres `ON CONFLICT` upsert results. Add content-hash embedding skip logic as pending polish. | Repeated demo runs must not create duplicate records or unnecessary work. |
+| Preserve commands verbatim | Do not reformat fenced code, shell snippets, or inline commands during normalization. | Verification and future conflict seeding rely on exact commands. Rewriting `npm run test` into prose destroys evidence. |
+| Citations need exact ranges | Line ranges are implemented; true source char offsets are not. Keep `char_range` TODO visible until `(0, len(block))` is replaced. | P1/P3 need evidence-backed answers and highlights; P4 provenance must trace to exact lines and commits. |
+| Propagate provenance | Carry `commit_sha` and `commit_date` from `RawDocument` into every chunk, vector record, edge, and search match. | Node health, verification stamps, provenance, and trust all depend on exact commit metadata. |
+| Sparse-checkout scope matters | Keep `sparsePaths` and `docGlobs` tight and clone with `--depth 1 --filter=blob:none --sparse --branch <branch>`. | Large repos like `microsoft/vscode` and `microsoft/onnxruntime` can be huge; broad clones risk slow demos and wasted disk. |
+| `repos.config.json` is config-driven | Treat source onboarding as a config edit with `shortName`, `sparsePaths`, and `docGlobs`. | General-plan §7 and team-plan §6 make configuration-driven sources a cross-cutting rule. |
+| Thresholds are fixed but pending | Duplicate: different `docId`s and `score >= 0.92`. Conflict seed: `score >= 0.85` plus divergent commands/values. | Stable thresholds make demo behavior explainable and prevent noisy graph edges once implemented. |
+| Structural vs semantic edges differ | Link extractor emits only `references`; future dedup/conflict services emit semantic candidates later. | Keeps Layer 2 deterministic and avoids mixing link parsing with similarity reasoning. |
+| Do not call LLMs | P2 deterministic services should not invoke Curator or Guardian. | The architecture budgets model quota for P3 agents; P2 consumes only embedding compute through the provider. |
+| Local first | Use local fastembed by default and switch to Azure only with `EMBEDDING_PROVIDER=azure`. | Ingestion and retrieval can run with no Azure credentials. |
+| Contracts are layered | Core `app/models.py` models are snake_case; API DTOs in `main.py` expose camelCase. There is no frozen camelCase `models/` package or `types.ts` yet. | Contract drift silently breaks P1/P3/P4 and the mock-to-real swap. |
+| Do not leak local paths | API responses should use repo-relative paths and `docId`s, not local machine absolute paths under `data\`. | Keeps responses portable and avoids exposing implementation details. |
+| Deleted docs need cleanup | On future `DocumentDeleted`, remove or stale-mark vectors/chunks and notify P4's store/graph layer. | Otherwise search can cite deleted content and graph health becomes misleading. |
+| Empty states are real states | Handle empty corpus, empty query, no vector index, no matches, and future inaccessible docs. | Team-plan §7 requires edge cases, not just happy paths. |
 
 Recommended command snippets for the ingestion design spec:
 
 ```powershell
 # New checkout: metadata first, docs only
- git clone --depth 1 --filter=blob:none --sparse <url> data/<repo-short>
- git sparse-checkout set <docGlobs>
+ git clone --depth 1 --filter=blob:none --sparse --branch <branch> <url> data\<repo-short>
+ git sparse-checkout set <sparsePaths>
 
 # Per-file provenance
  git log -1 --format="%H|%an|%ae|%cI" -- <path>
 
 # Refresh existing checkout
- git fetch --depth 1 origin
+ git fetch --depth 1 origin <branch>
  git reset --hard origin/<branch>
+
+# Local pipeline, no Azure required
+ python -m scripts.run_ingest --all
+ python -m scripts.load_vectors --all
+ python -m scripts.search --repo playwright "how do I run tests in CI"
 ```
 
-The snippets above are process documentation, not application source code. The implementation should wrap them safely, capture errors per repository, and avoid printing secrets or local absolute paths.
+The snippets above are process documentation, not application source code. The implementation wraps them safely, captures errors per repository where implemented, and should avoid printing secrets or local absolute paths.
 
 ## Definition of Done
 
@@ -301,14 +315,15 @@ Person 2's slice is done when it satisfies team-plan §7 and the retrieval-speci
 
 | Gate | Done means |
 | --- | --- |
-| Contract fidelity | `RawDocument`, refresh events, `DocChunk`, `GraphEdge`, and `SearchResult` match frozen Pydantic models and camelCase JSON exactly. No direct edits to `backend/app/models/**` or `frontend/src/lib/types.ts` after M1. |
-| Ingestion completeness | Configured repositories can be sparse/shallow cloned, scoped by `docGlobs`, converted to `RawDocument`, and refreshed into added/changed/deleted/unchanged outcomes. |
-| Processing determinism | Same `RawDocument` produces the same chunks, line ranges, char ranges, content hashes, and structural edges every run. Commands/code blocks remain verbatim. |
-| Search readiness | Chunks embed through `FakeEmbeddingProvider`, upsert behind `VectorIndex`, and return useful `SearchResult` records with score, text, `chunkId`, `docId`, line range, and commit SHA. |
-| Duplicate/conflict readiness | Duplicate candidates follow `score >= 0.92` across different docs; conflict seeds follow `score >= 0.85` plus divergent command/value evidence. |
-| Integration readiness | P3 can consume real `SearchResult`; P4 can persist document records and `GraphEdge` records through interfaces; P1 can see the effects through existing graph/search APIs without Person 2 editing frontend files. |
-| Quality gate | For touched backend modules, `ruff check`, `black --check`, and `pytest -q` pass. Documentation-only changes do not require code tests, but implementation PRs do. |
-| Edge cases | Empty corpus, missing repo config, clone failure, unchanged content, deleted docs, empty search results, malformed markdown links, and inaccessible docs are handled deliberately. |
-| Demo gate | By M4, 1–2 seed repos ingest reliably, planted duplicate/conflict fixtures trigger consistently, and incremental refresh can be demonstrated or replayed from a fallback fixture dataset. |
+| Contract fidelity | Core `RawDocument`, `DocChunk`, and `GraphEdge` models remain snake_case in `app/models.py`; API response DTOs in `main.py` expose camelCase JSON. No nonexistent `models/` package or `types.ts` should be treated as current reality. |
+| Ingestion completeness | Configured repositories can be sparse/shallow cloned, scoped by `sparsePaths`/`docGlobs`, converted to `RawDocument`, and processed through CLI. Explicit added/changed/deleted refresh events remain pending. |
+| Processing determinism | Same `RawDocument` produces the same chunks, line ranges, content hashes, and structural edges every run. Commands/code blocks remain verbatim; true char ranges and overlap remain pending. |
+| Search readiness | Chunks embed through local fastembed or Azure `EmbeddingProvider`, upsert into Postgres + pgvector, and return useful search matches with score, text, `chunkId`, `docId`, line range, and commit SHA. |
+| Duplicate/conflict readiness | Pending: duplicate candidates must follow `score >= 0.92` across different docs; conflict seeds must follow `score >= 0.85` plus divergent command/value evidence. |
+| Integration readiness | P3 can consume real search results; P4 can consume persisted document records and structural `references` edges through existing APIs/queries. Governance, ACL, provenance tables, and semantic edges are still future work. |
+| Quality gate | Documentation-only changes do not require code tests. Implementation PRs should run available backend checks; no ruff/black/pytest tooling is configured today. |
+| Edge cases | Empty corpus, missing repo config, clone failure, unchanged content, deleted docs, empty search results, malformed markdown links, and inaccessible docs are handled deliberately or tracked as pending where not yet built. |
+| Demo gate | By M4, configured repos ingest reliably, search returns stable results, and planted duplicate/conflict plus incremental refresh demos are implemented or replayed from fallback fixtures. |
 
 Final acceptance is not just "the code runs." It is that the retrieval pipeline can be rerun safely, produces evidence-backed records that other teammates can consume, and preserves provenance from git clone metadata all the way to search results and graph edges.
+

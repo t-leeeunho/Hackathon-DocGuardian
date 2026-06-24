@@ -3,6 +3,12 @@
 > Read `general-plan.md` first. This document defines **who owns what**, the
 > **parallel execution model**, the **milestones**, and the **general (shared)
 > todos**. Each person's detailed todos live in `docs/team/person-N-*.md`.
+>
+> **As-built note (2026-06-23):** the backend (ingestion → processing →
+> embeddings → pgvector retrieval → LangGraph agents → FastAPI) is implemented; the
+> frontend, governance, metrics, and verification are not. The ownership map below
+> has been updated to the **actual** backend layout. See
+> [`implementation-status.md`](implementation-status.md) for the ground truth.
 
 ---
 
@@ -27,89 +33,98 @@ integration/demo.
 
 ## 2. Ownership Map (guarantees no merge conflicts)
 
-The single most important coordination artifact. Each person edits only their own
-directories and their own API router file. The **shared/frozen** files are changed
-only by the director (whoever is driving Phase 0 / integration).
+The single most important coordination artifact. Each person works mainly in their
+own area; a few **shared** files are changed only by the director.
 
-### 2.1 Shared & frozen (director-only after M1)
-- `backend/app/models/**` — Pydantic data contracts.
-- `frontend/src/lib/types.ts` — mirrored TypeScript contracts.
-- `backend/app/main.py` — router wiring (one line per router, set in Phase 0).
-- `repos.config.json` — ingestion sources.
-- `.env.example`, root tooling configs.
+### 2.1 Shared files (director-coordinated)
+- `backend/app/models.py` — core snake_case contracts (`RawDocument`, `DocChunk`, `GraphEdge`).
+- `backend/app/main.py` — **all** FastAPI endpoints + camelCase response DTOs live here
+  today (a per-domain router split is a future refactor).
+- `backend/repos.config.json` — ingestion sources.
+- `backend/app/storage/db.py` — the Postgres schema (`init_schema`), touched by P2 + P4.
+- `backend/.env.example`, `backend/requirements.txt`, `backend/docker-compose.yml`.
+- `frontend/src/lib/types.ts` — *does not exist yet*; when created it mirrors the
+  camelCase API (README §8B).
 
-### 2.2 Per-person ownership
+### 2.2 Per-person ownership (actual paths; ✅ = exists, ⬜ = to build)
 
-| Person | Owns (directories) | Owns (API router file) |
+| Person | Owns (directories / files) | API endpoints |
 | --- | --- | --- |
-| **P1** | `frontend/src/**` (components, hooks, `lib/api.ts`, `lib/ws.ts`, styles) | — (consumes the API) |
-| **P2** | `backend/app/ingestion/**`, `backend/app/processing/**`, `backend/app/ai/embeddings.py`, `backend/app/services/retrieval.py`, `backend/app/services/dedup_conflict.py`, `backend/app/store/vector_*.py` | `backend/app/api/ingest.py`, `backend/app/api/search.py` |
-| **P3** | `backend/app/ai/orchestrator.py`, `backend/app/ai/agents/**`, `backend/app/ai/providers/**` | `backend/app/api/documents.py`, `backend/app/api/chat.py` |
-| **P4** | `backend/app/services/governance.py`, `backend/app/services/verification.py`, `backend/app/store/sqlite_*.py`, job queue | `backend/app/api/graph.py`, `backend/app/api/proposals.py`, `backend/app/api/metrics.py`, `backend/app/api/stream.py` |
+| **P1** | `frontend/**` ⬜ (entire frontend: components, hooks, API/WS client, styles) | consumes the API (README §8B) |
+| **P2** | `backend/app/ingestion/**` ✅, `backend/app/processing/**` ✅, `backend/app/embeddings/provider.py` ✅, `backend/app/storage/vectorstore.py` ✅, `backend/scripts/**` ✅; duplicate/conflict detection ⬜ | `GET /search` ✅, `POST /documents` ✅, `POST /ingest/refresh` ⬜ |
+| **P3** | `backend/app/agents/**` ✅ (`graph.py` LangGraph, `llm.py` Azure, `schemas.py`) | `POST /chat` ✅, `POST /propose` ✅ |
+| **P4** | `backend/app/storage/db.py` + `queries.py` ✅ (documents/chunks/edges); governance/ACL ⬜, provenance/approval ⬜, metrics ⬜, verification sandbox ⬜, health scoring ⬜ | `GET /graph` ✅, `GET /documents/{id}` ✅, `GET /metrics` ⬜, `POST /proposals/:id/approve` ⬜, `WS /stream` ⬜ |
 
-> **Rule:** if you need a change to a frozen file, ask the director. Never edit
-> another person's directory or router file. Talk to services through their
-> interfaces, not their source files.
+> **Note:** today the API is one `app/main.py` and `app/storage/` is shared by P2
+> (vectors) and P4 (metadata/graph). Splitting into per-domain routers and separate
+> service modules is a planned refactor — coordinate it through the director rather
+> than racing edits into `main.py`.
 
 ---
 
-## 3. Parallel Execution Model
+## 3. Execution Model — what's done, what's next
 
-| Phase | Who | What |
+The backend was built first (foundation → ingestion → processing → embeddings →
+retrieval → agents → API). The remaining work can now proceed largely **in
+parallel against the live API** (README §8B): the frontend, duplicate/conflict
+detection + health scoring, and the governance/metrics/verification layer.
+
+| Track | Status | What's left |
 | --- | --- | --- |
-| **Phase 0 — Foundation** | All (one driver) | Scaffold layout; **freeze contracts** (Pydantic + TS); provider/store interfaces + **fakes**; **mock API + fixtures**; tooling; `repos.config.json`. |
-| **Build (parallel)** | P1 ‖ P2 ‖ P3 ‖ P4 | Each builds their slice against mocks/fakes — see per-person docs. |
-| **Integration** | All | Swap fakes → real; wire SQLite store + real routers; flip frontend mock → real. |
-| **Demo polish** | All | Seed repos + planted fixtures; live metrics over WS; accessibility; rehearse. |
+| Backend foundation + pipeline + agents | ✅ done | — |
+| P2 — duplicate/conflict detection + node health | ⬜ next | similarity-threshold edges, freshness/health scoring |
+| P4 — governance / metrics / verification | ⬜ next | ACL, approval, provenance + rollback, `/metrics`, sandbox, `WS /stream` |
+| P1 — frontend | ⬜ next | build the UI on the live API |
+| Demo polish | ⬜ later | planted fixtures, rehearse the 9-step demo |
 
-### What each person develops against (before integration)
-- **P1** → mock API + local fixtures (`GraphDTO`, `ChatAnswer`, `AgentProposal`, `MetricsDTO`).
-- **P2** → `FakeEmbeddingProvider` + real git clones (clones are independent, start immediately).
-- **P3** → sample `SearchResult` fixtures + `FakeLLMProvider`.
-- **P4** → sample `AgentProposal` fixtures.
+### What each person builds against (today)
+- **P1** → the **real** backend API (README §8B); no mock needed (CORS already allows `localhost:5173`).
+- **P2** → real git clones + local fastembed + pgvector (all run offline).
+- **P3** → real pgvector retrieval; **Azure OpenAI required** for `/chat` + `/propose`.
+- **P4** → the existing Postgres store + real `AgentProposal`s from `/propose`.
 
 ---
 
-## 4. Milestones (definition + owner)
+## 4. Milestones (restated against current status)
 
-| Milestone | Definition | Gate for |
+| Milestone | Definition | Status |
 | --- | --- | --- |
-| **M1** | Contracts frozen; mock API live; frontend renders mocks end-to-end | Unblocks all parallel work |
-| **M2** | P2 real retrieval + P3 real Curator/Guardian replace fakes (still local store) | Real reasoning over real chunks |
-| **M3** | P4 SQLite store + governance + real routers replace mock API; P1 flips client mock→real | Real end-to-end pipeline |
-| **M4** | Seeded planted stale/duplicate/conflict fixtures; live metrics over WS; reduced-motion; rehearsed 9-step demo | Demo-ready |
+| **M1** | Backend pipeline + retrieval API live (ingest → chunk → embed → pgvector → `/search`) | ✅ reached |
+| **M2** | LangGraph Curator/Guardian agents live (`/chat`, `/propose`) | ✅ reached |
+| **M3** | Duplicate/conflict detection + node health scoring feed a real `/graph` | ⬜ next |
+| **M4** | Governance (ACL/approval/provenance) + `/metrics` + verification + `WS /stream` | ⬜ |
+| **M5** | Frontend on the live API + rehearsed 9-step demo | ⬜ |
 
 ---
 
-## 5. GENERAL TODOs (shared / sequenced)
+## 5. GENERAL TODOs (status-aware)
 
-These are the cross-team todos. Per-person build todos are in the individual docs.
+Per-person build todos are in the individual docs. ✅ = done, ⬜ = remaining.
 
-### 5.A Phase 0 — Foundation (must complete first → M1)
-- [ ] **G1.** Create monorepo layout: `backend/` (FastAPI), `frontend/` (Vite+React), `data/` (gitignored), `repos.config.json`, `.env.example`.
-- [ ] **G2.** **Freeze data contracts** — author every contract in §7 of the general plan as Pydantic v2 models (`backend/app/models/`), camelCase JSON, accepting snake/camel input.
-- [ ] **G3.** **Mirror contracts to TypeScript** — `frontend/src/lib/types.ts`, identical camelCase shape.
-- [ ] **G4.** Define provider interfaces `LLMProvider` / `EmbeddingProvider` + Azure stubs + working fakes.
-- [ ] **G5.** Define `Store` / `VectorIndex` interfaces + `InMemoryStore` + fake vector index.
-- [ ] **G6.** **Mock API**: one router file per domain, each returning fixture JSON; wire all routers once in `main.py`. Endpoints: `POST /ingest/refresh`, `GET /graph`, `GET /search`, `POST /documents`, `GET /proposals/:id`, `POST /proposals/:id/approve`, `GET /metrics`, `WS /stream`.
-- [ ] **G7.** Fixtures for `GraphDTO`, `ChatAnswer`, `AgentProposal`, `MetricsDTO`, `SearchResult`, `DocChunk`, `RawDocument` (reuse README §8A examples so they validate).
-- [ ] **G8.** Tooling: backend ruff + black + pytest; frontend eslint + tsc + vitest; `.env.example`; update `.gitignore` (node_modules, dist, data, *.db, .env).
-- [ ] **G9.** Smoke tests: app imports, `GET /graph` returns a valid `GraphDTO`, each model validates its README example.
-- [ ] **M1 GATE:** frontend renders the mock graph/chat/diff/metrics end-to-end.
+### 5.A Foundation + pipeline — DONE
+- [x] **G1.** `backend/` layout + `repos.config.json` (4 repos) + `.env.example` + `requirements.txt` + `docker-compose.yml` (Postgres+pgvector).
+- [x] **G2.** Core contracts in `app/models.py` (snake_case `RawDocument`/`DocChunk`/`GraphEdge`) + agent schemas in `app/agents/schemas.py`.
+- [x] **G3.** Embedding provider abstraction (`app/embeddings/provider.py`): local fastembed default + Azure option.
+- [x] **G4.** Postgres+pgvector store (`app/storage/`): schema, upserts, HNSW cosine search.
+- [x] **G5.** Ingestion + processing (`app/ingestion/`, `app/processing/`) + CLI (`scripts/`).
+- [x] **G6.** FastAPI API (`app/main.py`): `/health`, `/search`, `/documents`, `/tree`, `/graph`, `/documents/{id}`, `/chat`, `/propose`.
+- [x] **G7.** LangGraph Curator/Guardian graphs (`app/agents/graph.py`) + Azure chat factory (`app/agents/llm.py`).
 
-### 5.B Integration (after parallel build → M2/M3)
-- [ ] **G10.** Replace `FakeEmbeddingProvider`/`FakeLLMProvider` with real Azure-backed providers behind the same interfaces (config-switched).
-- [ ] **G11.** Replace `InMemoryStore` with the SQLite `Store`; keep the interface identical.
-- [ ] **G12.** Replace each mock router body with the real service call (P2/P3/P4 each own their routers).
-- [ ] **G13.** Flip the frontend client from `VITE_USE_MOCK` to the real API + WS.
-- [ ] **G14.** End-to-end test of the drop-off → proposal → approve → provenance → metrics flow.
+### 5.B Remaining shared work — TODO
+- [ ] **G8.** Duplicate detection (`duplicate-of` at score ≥ 0.92) + conflict seeding (`conflicts-with` at ≥ 0.85 + divergent commands).
+- [ ] **G9.** Node **health/freshness scoring** + importance (replace the `/graph` placeholders `green`/`0.5`/`true`).
+- [ ] **G10.** Governance: ACL columns + enforcement at retrieval/answer/write.
+- [ ] **G11.** Approval flow + `POST /proposals/:id/approve`; provenance log + one-click rollback (Postgres tables).
+- [ ] **G12.** Metrics aggregation + `GET /metrics`.
+- [ ] **G13.** Verification sandbox (README §10.6 targets a real containerized run).
+- [ ] **G14.** `WS /stream` live updates + `POST /ingest/refresh` (incremental refresh endpoint).
+- [ ] **G15.** Frontend (entire) on the live API; create `frontend/src/lib/types.ts` mirroring README §8B.
+- [ ] **G16.** Richer `AgentProposal` (structured `diff{}`, `evidence[]`, `verification{}`) per README §8A.4.
 
-### 5.C Demo polish (→ M4)
-- [ ] **G15.** Configure 1–2 seed repos in `repos.config.json`; run ingestion (sparse/shallow clone).
-- [ ] **G16.** **Seed planted fixtures** — obvious stale, duplicate, and conflicting docs that reliably trigger detection/proposal/approval.
-- [ ] **G17.** Wire live updates: proposals/graph/health/metrics over `WS /stream`.
-- [ ] **G18.** Accessibility pass: `prefers-reduced-motion` fallback for graph highlight.
-- [ ] **G19.** Rehearse the 9-step demo; prepare a fallback recording.
+### 5.C Hygiene + demo — TODO
+- [ ] **G17.** (Recommended) add dev tooling: ruff + black + pytest (backend), eslint + tsc + vitest (frontend) — *not configured yet*.
+- [ ] **G18.** (Optional refactor) split `app/main.py` into per-domain routers + extract `services/`.
+- [ ] **G19.** Seed planted stale/duplicate/conflict fixtures; accessibility pass; rehearse the 9-step demo.
 
 ---
 
@@ -127,20 +142,24 @@ These are the cross-team todos. Per-person build todos are in the individual doc
 ## 7. Definition of Done / Quality Gates
 
 A slice is "done" when:
-- It honors the frozen contracts exactly (names + types).
-- Backend: `ruff check` + `black --check` + `pytest -q` pass for the touched modules.
-- Frontend: `npm run lint` + `npx tsc --noEmit` + `npm run test` pass.
-- It works against mocks **and** (post-integration) against the real dependency.
-- Edge cases are handled, not just the happy path (empty results, low confidence,
-  inaccessible docs, unchanged content, deleted docs).
+- It honors the contract shapes (core snake_case models in `app/models.py`; camelCase
+  API DTOs in `app/main.py` per README §8B; agent schemas in `app/agents/schemas.py`).
+- It runs: today, verify the backend by running the CLI (`python -m scripts.run_ingest`,
+  `scripts.load_vectors`, `scripts.search`) and the API (`uvicorn app.main:app --reload`,
+  check Swagger at `/docs`). *(ruff/black/pytest and the frontend `eslint`/`tsc`/`vitest`
+  gates are recommended but not configured yet — see G17.)*
+- Edge cases are handled, not just the happy path (empty results, low confidence /
+  weak evidence → needs-human-review, unchanged content, deleted docs).
 
 ---
 
 ## 8. Communication Protocol
 
-- **Contract change?** → director updates `models/` + `types.ts` together, keeps the
-  camelCase JSON shape, and announces it. No one else edits those files.
-- **Need another person's output before integration?** → use the fixtures/fakes;
-  don't wait.
+- **Contract change?** → coordinate through the director. Core models live in
+  `app/models.py`, agent schemas in `app/agents/schemas.py`, and the camelCase API
+  shape in `app/main.py` DTOs (README §8B); when `frontend/src/lib/types.ts` exists
+  it must mirror that camelCase shape. Change the relevant places together and announce it.
+- **Need another person's output?** → the backend API is live; build against it
+  (README §8B) rather than waiting.
 - **Blocked?** → mark it, state the assumption you're proceeding with, and keep moving.
 - **Before integrating** → run the quality gate (§7) and reconcile against the contracts.
