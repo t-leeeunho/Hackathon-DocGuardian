@@ -1,9 +1,9 @@
 # DocGuardian AI — Implementation Status (As-Built)
 
-> **Snapshot date:** 2026-06-23. This document records what is **actually built**
-> in the backend today, versus what the planning docs describe. When a planning
-> doc disagrees with this file, **this file reflects reality** (it is derived
-> directly from the committed code). The locked product target is README §10.
+> **Snapshot date:** 2026-06-24. This document records what is **actually built**
+> today, versus what the planning docs describe. When a planning doc disagrees
+> with this file, **this file reflects reality** (it is derived directly from the
+> committed code). The locked product target is README §10.
 
 ---
 
@@ -11,10 +11,13 @@
 
 The **backend ingestion → processing → embedding → retrieval → agent** pipeline is
 implemented and runs locally. The HTTP API (README §8B) is a thin FastAPI wrapper
-over verified CLI logic. **No frontend exists yet.** Governance (ACL, approval,
+over verified CLI logic. The **React frontend is now scaffolded and buildable**
+(typecheck + tests + production build all green); it consumes the API and falls
+back to demo fixtures when the backend is offline. Governance (ACL, approval,
 provenance, rollback), metrics, the verification sandbox, duplicate/conflict
 detection, and live WebSocket updates are **not implemented yet** — they remain
-planned (README §6, §10.6–10.7).
+planned (README §6, §10.6–10.7), and the governance-dependent UI panels (metrics,
+proposal approve/reject) render against fixtures until those endpoints land.
 
 ---
 
@@ -27,7 +30,7 @@ planned (README §6, §10.6–10.7).
 | Vector index | **pgvector** in the same Postgres | ✅ `chunks.embedding VECTOR(dim)` + HNSW cosine index |
 | Embeddings | Provider-abstracted; **local fastembed default**, Azure optional | ✅ `LocalEmbeddingProvider` (BAAI/bge-small-en-v1.5, 384-dim) / `AzureEmbeddingProvider` |
 | LLM agents | **Azure OpenAI** chat (one deployment), two agents | ✅ Curator + Guardian via **LangGraph**; Azure **required** for agents (503 otherwise) |
-| Frontend | React + TS + Vite + Tailwind + shadcn/ui + **React Flow (2D)** + **Monaco** | ❌ Not started |
+| Frontend | React + TS + Vite + Tailwind + **React Flow (2D)** + **Monaco** | 🟡 Scaffolded (builds; demo-mode fixtures; consumes API) |
 | Verification sandbox | Containerized, real (README §10.6) | ❌ Not implemented |
 | Governance/auth | Mocked auth + real ACL/approval/provenance on Postgres (README §10.7) | ❌ Not implemented |
 
@@ -81,6 +84,34 @@ backend/
   `app/embeddings/` (vectors). There is no `app/ai/providers/` package.
 - There is a `scripts/` CLI used to verify the pipeline without the API.
 - Dependencies are in `requirements.txt` (no `pyproject.toml`, ruff/black/pytest).
+
+### 3.1 Actual Frontend Layout (as built)
+
+```text
+frontend/
+├── src/
+│   ├── App.tsx / main.tsx           # entry — renders <AppShell/>
+│   ├── vite-env.d.ts                # VITE_API_URL env typing
+│   ├── lib/                         # data layer (camelCase API contract)
+│   │   ├── types.ts                 # mirrors README §8B (GraphDTO, ChatAnswer, …)
+│   │   ├── api.ts                   # fetch client; snake→camel for /chat,/propose
+│   │   └── fixtures.ts              # demo/offline data (planted stale/dup/conflict)
+│   ├── hooks/                       # useChat, useGraph, useHighlight, useReducedMotion
+│   ├── components/
+│   │   ├── AppShell.tsx             # 3-pane layout + header/metrics strip
+│   │   ├── graph/                   # DocGraph (React Flow), DocNode, SparkleBackground
+│   │   ├── chat/                    # ChatPanel, CitationChip, ScopeToggle
+│   │   ├── sidebar/                 # FileTree
+│   │   ├── intake/                  # DropOffArea (drop-off intake)
+│   │   └── panels/                  # ProposalPanel (Monaco diff), Provenance, Metrics
+│   └── test/                        # App.test.tsx (vitest) + setup.ts
+```
+
+- The `src/lib/` folder was previously swallowed by the root `.gitignore` `lib/`
+  rule (Python build convention); a `!frontend/src/lib/` negation now keeps it
+  tracked.
+- No shadcn/ui yet — components are hand-styled (Radix primitives + lucide icons).
+- `npm run lint` is `tsc --noEmit` (no ESLint configured).
 
 ---
 
@@ -191,8 +222,11 @@ Azure-backed agents:
 | **Metrics dashboard + `/metrics`** | ❌ Pending |
 | **Verification sandbox** | ❌ Pending |
 | **WebSocket `/stream`, `/ingest/refresh`, proposal apply** | ❌ Pending |
-| **Frontend (entire)** | ❌ Pending |
-| **Dev tooling: ruff/black/pytest + tests** | ❌ Not configured |
+| **Frontend shell + graph/chat/intake/provenance/diff UI** | 🟡 Scaffolded (builds; consumes API; demo-mode fixtures) |
+| **Frontend data layer (`src/lib/types.ts`, `api.ts`, `fixtures.ts`)** | ✅ Implemented (camelCase API mirror + snake→camel client) |
+| **Frontend gates: `npm run lint` (tsc), `npm run test`, `npm run build`** | ✅ Green (8 vitest tests pass) |
+| **Frontend governance panels wired to live endpoints** | ❌ Pending (metrics/approve render from fixtures) |
+| **Dev tooling (backend): ruff/black/pytest + tests** | ❌ Not configured |
 
 ---
 
@@ -215,6 +249,21 @@ uvicorn app.main:app --reload --port 8000          # Swagger at /docs
 #   AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_CHAT_DEPLOYMENT
 ```
 
+```powershell
+cd frontend
+npm install                          # first run downloads deps
+npm run dev                          # Vite dev server at http://localhost:5173
+
+# Quality gates:
+npm run lint                         # tsc --noEmit (typecheck)
+npm run test                         # vitest (fixture/contract tests)
+npm run build                        # production build
+
+# Optional: point at a non-default API with VITE_API_URL (defaults to
+# http://localhost:8000). With the backend down, the UI runs in demo mode
+# using src/lib/fixtures.ts.
+```
+
 ---
 
 ## 10. Guidance for the Planning Docs
@@ -225,7 +274,12 @@ When reading the other docs, apply these corrections:
   and **required only for the agents**.
 - **Agents** are built with **LangGraph**, not a hand-rolled orchestrator loop.
 - The **API surface** is §4 above (README §8B), not the older §8A.5 table.
-- **Contracts** are snake_case core models + camelCase API DTOs + agent schemas —
-  there is no single frozen camelCase `models/` package or `types.ts` yet.
-- **Governance, metrics, verification, conflict detection, and the frontend** are
-  **not built yet** — they are the next work, not current behavior.
+- **Contracts** are snake_case core models + camelCase API DTOs + agent schemas.
+  The frontend now has `frontend/src/lib/types.ts` mirroring the **camelCase** API
+  (README §8B); the API client deep-converts the snake_case `/chat` and `/propose`
+  responses to camelCase. There is still no single frozen camelCase `models/`
+  package on the backend.
+- The **frontend is scaffolded and buildable** (shell, React Flow graph, chat,
+  drop-off intake, provenance + diff panels, metrics strip) with demo-mode
+  fixtures; **governance, metrics, verification, and conflict detection backends**
+  are still the next work, and the panels that depend on them render from fixtures.
