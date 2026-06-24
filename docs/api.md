@@ -29,7 +29,7 @@
 | Capability | Needs |
 | --- | --- |
 | search, tree, graph, documents, intake, metrics, verify status | Postgres + pgvector only (no cloud) |
-| `/chat`, `/propose`, AI doc summaries | Azure OpenAI (else `503` / extractive summary) |
+| `/chat`, `/propose`, AI doc summaries | Azure OpenAI by default (else `503` / extractive summary), or set `CHAT_PROVIDER=fake` for a deterministic offline provider |
 | `/verify` actually running a container | Docker daemon (else `available:false`) |
 
 ---
@@ -46,8 +46,8 @@
 | POST | `/documents` | drop-off intake (sync `201`, or `?background=true` → `202`+job) |
 | GET | `/jobs/{jobId}` | async ingest job status |
 | GET | `/provenance/{docId}` | append-only audit history for a doc |
-| POST | `/chat` | Curator evidence-backed answer (Azure) |
-| POST | `/propose` | Curator+Guardian proposed change (Azure); persisted |
+| POST | `/chat` | Curator evidence-backed answer (Azure or `CHAT_PROVIDER=fake`) |
+| POST | `/propose` | Curator+Guardian proposed change (Azure or fake); persisted |
 | GET | `/proposals/{id}` | a persisted proposal + approval/provenance context |
 | POST | `/proposals/{id}/approve` | approve + apply (writes provenance) |
 | POST | `/proposals/{id}/rollback` | roll back an applied proposal |
@@ -189,7 +189,13 @@ Poll until terminal, or listen on `WS /stream` for the `ingest` event.
 
 ---
 
-## 5. Agents (Azure OpenAI)
+## 5. Agents (Azure OpenAI, or offline fake)
+
+Two LLM-backed agents (Curator, Guardian) run on **LangGraph**. They use Azure
+OpenAI by default. Set `CHAT_PROVIDER=fake` (or `auto` = Azure-if-configured-else-fake)
+to run a deterministic, offline provider for dev/tests/demo — same response shapes,
+no cloud calls. Cost ceiling: `/chat` = **1** LLM call, `/propose` = **≤2**
+(`retrieve → curator → guardian`; the retrieve node uses no LLM).
 
 ### POST `/chat`
 Body: `{ "query": "How do I build Garnet?", "repo": "garnet", "k": 5 }`
@@ -200,13 +206,17 @@ Response (camelCase after client conversion):
   "scope": "garnet",
   "confidence": 0.95,
   "needsHumanReview": false,
+  "reasoning": "From [1] I took the clone step; from [2] the .NET build command.",
   "citations": [
     { "docId": "garnet/…/build.md", "lineRange": [12, 24], "commitSha": "…", "relevance": 0.91 }
   ]
 }
 ```
-- `503` if Azure is not configured. Weak evidence (top score < 0.45) returns a
-  `needsHumanReview: true` answer with **no LLM cost**.
+- `reasoning` is a short trace of how the answer was derived from the cited sources
+  (may be empty). Surface it behind a "show your work" affordance.
+- `503` only when `CHAT_PROVIDER` resolves to Azure and Azure is not configured.
+  Weak evidence (top score < 0.45) returns a `needsHumanReview: true` answer routed
+  to human review with **no LLM cost**.
 
 ### POST `/propose`
 Body: `{ "instruction": "Unify the build docs into one canonical doc.", "repo": "garnet", "k": 6 }`
