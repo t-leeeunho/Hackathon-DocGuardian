@@ -19,8 +19,9 @@ For the current implemented backend, read [`docs/implementation-status.md`](docs
    `backend/app/main.py` are camelCase; agent structured outputs live in
    `backend/app/agents/schemas.py`. There is no frontend `types.ts` yet.
 2. **Use the real seams.** Ingestion/search run locally with Postgres + pgvector and
-   local fastembed embeddings. `/chat` and `/propose` require Azure OpenAI chat and
-   return 503 if Azure is unconfigured; there is no fake/local chat fallback today.
+   local fastembed embeddings. `/chat` and `/propose` default to Azure OpenAI chat and
+   return 503 if Azure is unconfigured; an opt-in `CHAT_PROVIDER=fake` provider runs
+   them offline for dev/tests/demo.
 3. **Stay in your lane while respecting current structure.** Today all endpoints are
    in `backend/app/main.py`, storage is `backend/app/storage/`, and AI code is split
    between `backend/app/embeddings/` and `backend/app/agents/`. A per-domain router
