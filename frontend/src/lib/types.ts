@@ -18,7 +18,8 @@ export type GraphEdgeType =
   | 'duplicate-of'
   | 'conflicts-with'
   | 'deprecated-by'
-  | 'related-to';
+  | 'related-to'
+  | 'sibling';
 
 export interface GraphNode {
   id: string;
@@ -50,6 +51,7 @@ export interface TreeNode {
   name: string;
   type: 'directory' | 'file';
   path: string;
+  summary?: string;
   children?: TreeNode[];
 }
 
@@ -77,6 +79,30 @@ export interface DocumentIntakeResponse {
   docId: string;
   chunks: number;
   edges: number;
+  conflictEdges?: number;
+  summary?: string;
+}
+
+export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
+
+export interface IngestJob {
+  jobId: string;
+  docId: string;
+  status: JobStatus;
+  result?: DocumentIntakeResponse | null;
+  error?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** A tiny event envelope from `WS /stream`. */
+export interface StreamEvent {
+  type: 'connected' | 'heartbeat' | 'ingest' | 'graph' | 'metrics' | 'proposal';
+  jobId?: string;
+  docId?: string;
+  status?: string;
+  error?: string;
+  [k: string]: unknown;
 }
 
 // --------------------------------------------------------------------------- //
@@ -94,6 +120,7 @@ export interface Citation {
 export interface ChatAnswer {
   answer: string;
   scope?: string;
+  reasoning?: string;
   citations: Citation[];
   confidence: number;
   needsHumanReview: boolean;
@@ -179,4 +206,6 @@ export interface GraphHighlightEvent {
   intensity: number;
   /** How long the highlight stays before auto-clearing, in ms. */
   ttlMs: number;
+  /** When true, the graph also flies the camera to the highlighted node(s). */
+  focus?: boolean;
 }

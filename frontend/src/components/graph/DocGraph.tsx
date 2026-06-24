@@ -1,22 +1,8 @@
-import { useCallback, useMemo, useEffect } from 'react';
-import {
-  ReactFlow,
-  Background,
-  BackgroundVariant,
-  Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  MarkerType,
-  type Node,
-  type Edge,
-  type OnConnect,
-  type NodeTypes,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
-import { DocNode } from './DocNode';
-import { SparkleBackground } from './SparkleBackground';
-import type { GraphDTO, GraphNode as GNode } from '../../lib/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ForceGraph3D from 'react-force-graph-3d';
+import * as THREE from 'three';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import type { GraphDTO } from '../../lib/types';
 import type { HighlightState } from '../../hooks/useHighlight';
 
 interface DocGraphProps {
@@ -26,297 +12,351 @@ interface DocGraphProps {
   loading?: boolean;
 }
 
-const nodeTypes: NodeTypes = {
-  docNode: DocNode,
-};
-
-// Simple force-like layout: arrange nodes in clusters by repo
-function layoutNodes(graphNodes: GNode[]): Record<string, { x: number; y: number }> {
-  const repos = [...new Set(graphNodes.map(n => n.repo))];
-  const positions: Record<string, { x: number; y: number }> = {};
-  const repoGroups: Record<string, GNode[]> = {};
-
-  for (const n of graphNodes) {
-    if (!repoGroups[n.repo]) repoGroups[n.repo] = [];
-    repoGroups[n.repo].push(n);
-  }
-
-  const repoCount = repos.length;
-  repos.forEach((repo, repoIdx) => {
-    const nodes = repoGroups[repo];
-    // Place repo clusters in a circular arrangement
-    const angle = (repoIdx / repoCount) * Math.PI * 2 - Math.PI / 2;
-    const clusterRadius = 260;
-    const cx = 400 + Math.cos(angle) * clusterRadius;
-    const cy = 320 + Math.sin(angle) * clusterRadius;
-
-    nodes.forEach((node, i) => {
-      const nodeAngle = (i / nodes.length) * Math.PI * 2;
-      const innerRadius = 80 + nodes.length * 12;
-      positions[node.id] = {
-        x: cx + Math.cos(nodeAngle) * innerRadius,
-        y: cy + Math.sin(nodeAngle) * innerRadius,
-      };
-    });
-  });
-
-  return positions;
+/** Node shape we feed to the force graph. */
+interface FGNode {
+  id: string;
+  name: string;
+  val: number;
+  color: string;
+  repo: string;
+  accessible: boolean;
+  x?: number;
+  y?: number;
+  z?: number;
+}
+interface FGLink {
+  source: string;
+  target: string;
+  type: string;
 }
 
-function getEdgeStyle(type: string, highlighted: boolean): Partial<Edge> {
-  const base: Partial<Edge> = {
-    animated: false,
-    type: 'straight',
-    style: {},
+// One vivid color per project; conflicts override to a single shared red so they
+// pop no matter which project they live in.
+const REPO_PALETTE = [
+  '#60a5fa', '#22d3ee', '#a78bfa', '#f472b6',
+  '#34d399', '#fbbf24', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9',
+];
+const HIGHLIGHT_COLOR = '#ffffff';
+// Every normal doc is a calm grey that stays *below* the bloom threshold, so it
+// doesn't glow. Conflicts are shown as red *edges* between docs (a field of red
+// nodes looked unpleasant). Only a cited/searched node turns bright white and
+// blooms — that's the "shine" when a question references it.
+const GENERIC_COLOR = '#94a3b8';
+
+const LINK_COLOR: Record<string, string> = {
+  'conflicts-with': '#ef4444',
+  'duplicate-of': '#f97316',
+  'deprecated-by': '#64748b',
+  sibling: '#64748b',
+  references: '#64748b',
+};
+
+// react-force-graph hands callbacks its internal node/link objects; cast to ours.
+function asNode(o: object): FGNode {
+  return o as unknown as FGNode;
+}
+
+type Vec3 = { x: number; y: number; z: number };
+
+// A uniformly-random point inside a ball of the given radius.
+function spherePoint(radius: number): Vec3 {
+  const u = Math.random();
+  const v = Math.random();
+  const theta = 2 * Math.PI * u;
+  const phi = Math.acos(2 * v - 1);
+  const r = radius * Math.cbrt(Math.random());
+  return {
+    x: r * Math.sin(phi) * Math.cos(theta),
+    y: r * Math.sin(phi) * Math.sin(theta),
+    z: r * Math.cos(phi),
   };
+}
 
-  if (highlighted) {
-    return {
-      ...base,
-      className: 'highlighted-edge',
-      style: {
-        stroke: '#8b5cf6',
-        strokeWidth: 2,
-        filter: 'drop-shadow(0 0 6px rgba(139,92,246,0.8))',
-      },
-      animated: true,
-    };
-  }
-
-  switch (type) {
-    case 'conflicts-with':
-      return {
-        ...base,
-        className: 'conflict-edge',
-        style: {
-          stroke: '#ef4444',
-          strokeWidth: 2.5,
-          strokeDasharray: '6 3',
-          filter: 'drop-shadow(0 0 4px rgba(239,68,68,0.5))',
-        },
-      };
-    case 'duplicate-of':
-      return {
-        ...base,
-        className: 'duplicate-edge',
-        style: {
-          stroke: '#f97316',
-          strokeWidth: 1.5,
-          strokeDasharray: '6 3',
-        },
-      };
-    case 'deprecated-by':
-      return {
-        ...base,
-        className: 'deprecated-edge',
-        style: {
-          stroke: '#6b7280',
-          strokeWidth: 1,
-          strokeDasharray: '4 4',
-          opacity: 0.5,
-        },
-      };
-    default: // references
-      return {
-        ...base,
-        style: {
-          stroke: 'rgba(148,163,184,0.4)',
-          strokeWidth: 1.2,
-        },
-      };
-  }
+// A floating text tag (project name) rendered as a three.js sprite.
+function makeLabelSprite(text: string, color: string): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+  const font = '700 64px Inter, system-ui, sans-serif';
+  ctx.font = font;
+  const pad = 30;
+  canvas.width = Math.ceil(ctx.measureText(text).width + pad * 2);
+  canvas.height = 64 + pad * 2;
+  ctx.font = font; // resizing the canvas resets the context
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(8,8,14,0.55)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = color;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  const worldW = 260;
+  const scale = worldW / canvas.width;
+  sprite.scale.set(canvas.width * scale, canvas.height * scale, 1);
+  return sprite;
 }
 
 export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProps) {
-  const positions = useMemo(() => layoutNodes(data.nodes), [data.nodes]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fgRef = useRef<any>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims] = useState({ width: 800, height: 600 });
 
-  const initialNodes: Node[] = useMemo(
-    () =>
-      data.nodes.map(gn => ({
-        id: gn.id,
-        type: 'docNode',
-        position: positions[gn.id] ?? { x: 100, y: 100 },
-        data: {
-          ...gn,
-          highlighted: highlight.nodeIds.has(gn.id),
-        },
-        selected: false,
-      })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data.nodes, positions],
-  );
+  // Keep the latest highlight in a ref so the color/size accessors can read it
+  // without rebuilding graphData (which would reheat the simulation).
+  const highlightRef = useRef(highlight);
+  highlightRef.current = highlight;
 
-  const initialEdges: Edge[] = useMemo(
-    () =>
-      data.edges.map(ge => {
-        const highlighted = highlight.edgeIds?.has(ge.id) ?? false;
-        const edgeStyle = getEdgeStyle(ge.type, highlighted);
-        return {
-          id: ge.id,
-          source: ge.source,
-          target: ge.target,
-          ...edgeStyle,
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color:
-              ge.type === 'conflicts-with'
-                ? '#ef4444'
-                : ge.type === 'duplicate-of'
-                  ? '#f97316'
-                  : 'rgba(148,163,184,0.5)',
-            width: 8,
-            height: 8,
-          },
-        };
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data.edges],
-  );
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-  // Sync when data loads asynchronously (useNodesState/useEdgesState only use the value at mount)
-  useEffect(() => {
-    setNodes(initialNodes);
-  }, [initialNodes, setNodes]);
-
-  useEffect(() => {
-    setEdges(initialEdges);
-  }, [initialEdges, setEdges]);
-
-  // Sync highlight changes without full re-mount
-  const highlightedNodes = useMemo(() => {
-    return nodes.map(n => ({
-      ...n,
-      data: {
-        ...n.data,
-        highlighted: highlight.nodeIds.has(n.id),
-      },
-    }));
-  }, [nodes, highlight.nodeIds]);
-
-  const highlightedEdges = useMemo(() => {
-    return edges.map(e => {
-      const highlighted = highlight.edgeIds?.has(e.id) ?? false;
-      // Find original type
-      const original = data.edges.find(de => de.id === e.id);
-      const edgeStyle = getEdgeStyle(original?.type ?? 'references', highlighted);
-      return { ...e, ...edgeStyle };
+  // One labelled, well-separated 3D ball per project.
+  const clusters = useMemo(() => {
+    const repos = [...new Set(data.nodes.map((n) => n.repo))].sort();
+    const counts: Record<string, number> = {};
+    data.nodes.forEach((n) => {
+      counts[n.repo] = (counts[n.repo] ?? 0) + 1;
     });
-  }, [edges, highlight.edgeIds, data.edges]);
+    const ringRadius = 360 + repos.length * 55;
+    return repos.map((repo, i) => {
+      const a = (i / Math.max(1, repos.length)) * Math.PI * 2;
+      return {
+        repo,
+        color: REPO_PALETTE[i % REPO_PALETTE.length],
+        count: counts[repo],
+        ballR: 70 + Math.cbrt(counts[repo]) * 30,
+        center: {
+          x: Math.cos(a) * ringRadius,
+          y: Math.sin(a) * ringRadius,
+          z: (i % 2 === 0 ? 1 : -1) * (140 + i * 60),
+        } as Vec3,
+      };
+    });
+  }, [data]);
 
-  const onConnect: OnConnect = useCallback(
-    () => setNodes(nds => nds.map(n => ({ ...n }))),
-    [setNodes],
-  );
+  // Build graph data only when the document set changes. Each project's nodes are
+  // placed inside their own 3D ball (and the layout is frozen) so every project
+  // reads as a clean round sphere; nodes share one color except conflicts (red).
+  const graphData = useMemo(() => {
+    const byRepo = new Map(clusters.map((c) => [c.repo, c]));
+    const nodes: FGNode[] = data.nodes.map((n) => {
+      const cl = byRepo.get(n.repo);
+      const c = cl?.center ?? { x: 0, y: 0, z: 0 };
+      const p = spherePoint(cl?.ballR ?? 80);
+      return {
+        id: n.id,
+        name: `${n.label}  ·  ${n.repo}`,
+        val: 1 + Math.max(0, Math.min(1, n.size)) * 3.5,
+        color: GENERIC_COLOR,
+        repo: n.repo,
+        accessible: n.accessible,
+        x: c.x + p.x,
+        y: c.y + p.y,
+        z: c.z + p.z,
+      };
+    });
+    const ids = new Set(nodes.map((n) => n.id));
+    const links: FGLink[] = data.edges
+      .filter((e) => ids.has(e.source) && ids.has(e.target))
+      .map((e) => ({ source: e.source, target: e.target, type: e.type }));
+    return { nodes, links };
+  }, [clusters, data]);
 
-  const handleNodeClick = useCallback(
-    (_: React.MouseEvent, node: Node) => {
-      onNodeClick?.(node.id);
+  // One well-separated 3D center per repo is applied by seeding node positions
+  // (see graphData above). No runtime d3 force manipulation — that races the
+  // library's animation loop and crashes.
+
+  // Add a bloom pass once so bright nodes glow/sparkle (the celestial look).
+  const bloomAdded = useRef(false);
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || bloomAdded.current) return;
+    try {
+      const composer = fg.postProcessingComposer?.();
+      if (!composer) return;
+      const bloom = new UnrealBloomPass(
+        new THREE.Vector2(dims.width, dims.height),
+        1.1, // strength
+        0.5, // radius
+        0.55, // threshold (only bright white cited nodes bloom; grey stays calm)
+      );
+      composer.addPass(bloom);
+      bloomAdded.current = true;
+    } catch {
+      /* bloom is best-effort */
+    }
+  }, [dims, graphData]);
+
+  // The layout is frozen (no ticks), so fit the camera exactly once on load.
+  const fittedRef = useRef(false);
+  useEffect(() => {
+    if (fittedRef.current || graphData.nodes.length === 0) return;
+    const t = setTimeout(() => {
+      fgRef.current?.zoomToFit?.(700, 140);
+      fittedRef.current = true;
+    }, 500);
+    return () => clearTimeout(t);
+  }, [graphData]);
+
+  // A surrounding starfield so it feels like a place in space, not flat black.
+  const starsAdded = useRef(false);
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || starsAdded.current || graphData.nodes.length === 0) return;
+    try {
+      const scene = fg.scene?.();
+      if (!scene) return;
+      const count = 1800;
+      const positions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        // points on a large spherical shell surrounding the scene
+        const r = 2600 + Math.random() * 1800;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3 + 2] = r * Math.cos(phi);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0x9fb4ff,
+        size: 2.4,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.75,
+        depthWrite: false,
+      });
+      scene.add(new THREE.Points(geo, mat));
+      starsAdded.current = true;
+    } catch {
+      /* starfield is best-effort */
+    }
+  }, [graphData]);
+
+  // Floating project-name tags above each cluster so they're easy to tell apart.
+  const labelsAdded = useRef(false);
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || labelsAdded.current || clusters.length === 0) return;
+    try {
+      const scene = fg.scene?.();
+      if (!scene) return;
+      for (const cl of clusters) {
+        const sprite = makeLabelSprite(cl.repo, cl.color);
+        sprite.position.set(cl.center.x, cl.center.y + cl.ballR + 110, cl.center.z);
+        scene.add(sprite);
+      }
+      labelsAdded.current = true;
+    } catch {
+      /* labels are best-effort */
+    }
+  }, [clusters]);
+
+  // Responsive sizing.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => setDims({ width: el.clientWidth, height: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Re-tint/blink the cited nodes when the highlight changes. No camera movement.
+  useEffect(() => {
+    fgRef.current?.refresh?.();
+  }, [highlight]);
+
+  const nodeColor = useCallback((node: object) => {
+    const n = asNode(node);
+    if (highlightRef.current.nodeIds.has(n.id)) return HIGHLIGHT_COLOR;
+    if (!n.accessible) return '#3b3b44';
+    return n.color;
+  }, []);
+
+  const nodeVal = useCallback((node: object) => {
+    const n = asNode(node);
+    return highlightRef.current.nodeIds.has(n.id) ? n.val * 3 : n.val;
+  }, []);
+
+  const linkColor = useCallback((link: object) => {
+    const type = (link as unknown as FGLink).type;
+    return LINK_COLOR[type] ?? LINK_COLOR.references;
+  }, []);
+
+  const linkWidth = useCallback((link: object) => {
+    const type = (link as unknown as FGLink).type;
+    return type === 'conflicts-with' || type === 'duplicate-of' ? 1.2 : 0.8;
+  }, []);
+
+  const handleClick = useCallback(
+    (node: object) => {
+      onNodeClick?.(asNode(node).id);
     },
     [onNodeClick],
   );
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        width: '100%',
-        height: '100%',
-        background: '#0d0d12',
-      }}
-    >
-      {/* Cosmic sparkle background */}
-      <SparkleBackground />
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', background: '#000000' }}>
+      {graphData.nodes.length > 0 && (
+      <ForceGraph3D
+        ref={fgRef}
+        width={dims.width}
+        height={dims.height}
+        graphData={graphData}
+        backgroundColor="#000000"
+        showNavInfo={false}
+        nodeLabel="name"
+        nodeColor={nodeColor}
+        nodeVal={nodeVal}
+        nodeRelSize={3}
+        nodeOpacity={0.95}
+        nodeResolution={12}
+        linkColor={linkColor}
+        linkWidth={linkWidth}
+        linkOpacity={0.45}
+        warmupTicks={0}
+        cooldownTicks={0}
+        onNodeClick={handleClick}
+      />
+      )}
 
-      {/* Dot grid overlay */}
+      {/* legend */}
       <div
         style={{
-          position: 'absolute',
-          inset: 0,
-          backgroundImage:
-            'radial-gradient(circle, rgba(139,92,246,0.08) 1px, transparent 1px)',
-          backgroundSize: '32px 32px',
-          pointerEvents: 'none',
-          zIndex: 1,
+          position: 'absolute', bottom: 16, left: 16, zIndex: 5,
+          display: 'flex', gap: 12, padding: '6px 12px', borderRadius: 8,
+          background: 'rgba(18,18,26,0.7)', border: '1px solid rgba(139,92,246,0.18)',
+          fontSize: 11, color: '#94a3b8', backdropFilter: 'blur(8px)',
         }}
-      />
-
-      {/* React Flow graph */}
-      <div style={{ position: 'absolute', inset: 0, zIndex: 2 }}>
-        <ReactFlow
-          nodes={highlightedNodes}
-          edges={highlightedEdges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={handleNodeClick}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          attributionPosition="bottom-right"
-          style={{ background: 'transparent' }}
-          proOptions={{ hideAttribution: true }}
-          defaultEdgeOptions={{
-            type: 'straight',
-          }}
-        >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={32}
-            size={1}
-            color="rgba(139,92,246,0.05)"
-            style={{ background: 'transparent' }}
-          />
-          <Controls
-            style={{ bottom: 24, left: 16 }}
-          />
-          <MiniMap
-            style={{ bottom: 24, right: 16, width: 160, height: 100 }}
-            nodeColor={n => {
-              const health = (n.data as { health?: string }).health;
-              switch (health) {
-                case 'green': return '#22d3a0';
-                case 'yellow': return '#f59e0b';
-                case 'red': return '#ef4444';
-                default: return '#4b5563';
-              }
-            }}
-            maskColor="rgba(13,13,18,0.8)"
-          />
-        </ReactFlow>
+      >
+        {[
+          ['#94a3b8', 'document'], ['#f87171', 'conflict link'], ['#ffffff', 'cited'],
+        ].map(([c, label]) => (
+          <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}` }} />
+            {label}
+          </span>
+        ))}
+        <span style={{ color: '#475569' }}>drag to orbit · scroll to zoom</span>
       </div>
 
-      {/* Loading overlay */}
       {loading && (
         <div
           style={{
-            position: 'absolute',
-            inset: 0,
-            zIndex: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'rgba(13,13,18,0.7)',
-            backdropFilter: 'blur(4px)',
+            position: 'absolute', inset: 0, zIndex: 10, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', background: 'rgba(13,13,18,0.7)',
           }}
         >
-          <div style={{ textAlign: 'center' }}>
+          <div style={{ textAlign: 'center', color: '#94a3b8' }}>
             <div
               style={{
-                width: 48,
-                height: 48,
-                borderRadius: '50%',
-                border: '3px solid rgba(139,92,246,0.2)',
-                borderTopColor: '#8b5cf6',
+                width: 40, height: 40, borderRadius: '50%', margin: '0 auto 12px',
+                border: '3px solid rgba(139,92,246,0.2)', borderTopColor: '#8b5cf6',
                 animation: 'spin 1s linear infinite',
-                margin: '0 auto 12px',
               }}
             />
-            <span style={{ color: 'rgba(226,232,240,0.6)', fontSize: 13 }}>
-              Loading graph…
-            </span>
+            <div style={{ fontSize: 12 }}>Loading graph…</div>
           </div>
         </div>
       )}

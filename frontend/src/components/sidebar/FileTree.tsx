@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, Search } from 'lucide-react';
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, Search, Sparkles } from 'lucide-react';
 import { api } from '../../lib/api';
 import { fixtureTree } from '../../lib/fixtures';
 import type { TreeNode } from '../../lib/types';
@@ -33,6 +33,8 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
   const isDir = node.type === 'directory';
   const isSelected = selectedPath === node.path;
   const indent = depth * 14;
+  // Documents rewritten by the AI live under the `curated/` namespace.
+  const isAi = node.path === 'curated' || node.path.startsWith('curated/');
 
   if (isDir) {
     return (
@@ -61,13 +63,16 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
             {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           </span>
           {expanded ? (
-            <FolderOpen size={13} color="#8b5cf6" style={{ flexShrink: 0 }} />
+            <FolderOpen size={13} color={isAi ? '#c084fc' : '#8b5cf6'} style={{ flexShrink: 0 }} />
           ) : (
-            <Folder size={13} color="#6366f1" style={{ flexShrink: 0 }} />
+            <Folder size={13} color={isAi ? '#c084fc' : '#6366f1'} style={{ flexShrink: 0 }} />
           )}
-          <span style={{ fontWeight: 600, letterSpacing: '0.01em', color: '#c4b5fd' }}>
-            {node.name}
+          <span style={{ fontWeight: 600, letterSpacing: '0.01em', color: isAi ? '#d8b4fe' : '#c4b5fd' }}>
+            {node.path === 'curated' ? 'AI Curated' : node.name}
           </span>
+          {node.path === 'curated' && (
+            <Sparkles size={11} color="#c084fc" style={{ flexShrink: 0, marginLeft: 2 }} />
+          )}
         </button>
 
         {expanded && node.children && (
@@ -91,6 +96,7 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
   return (
     <button
       onClick={() => onSelect(node.path)}
+      title={node.summary ? `${node.name} — ${node.summary}` : node.name}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -121,10 +127,21 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
         }
       }}
     >
-      <File size={12} color={isSelected ? '#a78bfa' : '#475569'} style={{ flexShrink: 0 }} />
+      {isAi ? (
+        <Sparkles size={12} color={isSelected ? '#d8b4fe' : '#c084fc'} style={{ flexShrink: 0 }} />
+      ) : (
+        <File size={12} color={isSelected ? '#a78bfa' : '#475569'} style={{ flexShrink: 0 }} />
+      )}
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {node.name}
       </span>
+      {isAi && (
+        <span style={{
+          marginLeft: 'auto', fontSize: 8, fontWeight: 700, color: '#c084fc',
+          background: 'rgba(192,132,252,0.12)', border: '1px solid rgba(192,132,252,0.3)',
+          borderRadius: 3, padding: '0 4px', letterSpacing: '0.05em', flexShrink: 0,
+        }}>AI</span>
+      )}
     </button>
   );
 }

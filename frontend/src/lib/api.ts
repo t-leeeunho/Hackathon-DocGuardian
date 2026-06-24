@@ -17,6 +17,7 @@ import type {
   DocumentResponse,
   GraphDTO,
   GraphEdge,
+  IngestJob,
   TreeNode,
 } from './types';
 
@@ -101,7 +102,7 @@ export const api = {
   async getTree(namespace?: string): Promise<TreeNode[]> {
     const qs = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
     const raw = await request<
-      Array<{ name: string; type: string; path: string; children?: unknown[] }>
+      Array<{ name: string; type: string; path: string; summary?: string; children?: unknown[] }>
     >(`/tree${qs}`);
     return normalizeTree(raw);
   },
@@ -115,6 +116,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name: name ?? 'untitled.md', content, namespace: 'user' }),
     });
+  },
+
+  /** Submit a document for background ingestion. Resolves immediately with a job. */
+  ingestDocumentAsync(content: string, name?: string): Promise<IngestJob> {
+    return request<IngestJob>('/documents?background=true', {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? 'untitled.md', content, namespace: 'user' }),
+    });
+  },
+
+  getJob(jobId: string): Promise<IngestJob> {
+    return request<IngestJob>(`/jobs/${encodeURIComponent(jobId)}`);
+  },
+
+  /** ws:// URL for the live event stream (README §8B WS /stream). */
+  streamUrl(): string {
+    return API_BASE.replace(/^http/, 'ws') + '/stream';
   },
 
   async chat(query: string, repo?: string): Promise<ChatAnswer> {
@@ -138,15 +156,22 @@ export const api = {
 };
 
 function normalizeTree(
-  nodes: Array<{ name: string; type: string; path: string; children?: unknown[] }>,
+  nodes: Array<{ name: string; type: string; path: string; summary?: string; children?: unknown[] }>,
 ): TreeNode[] {
   return nodes.map((n) => ({
     name: n.name,
     type: n.type === 'file' ? 'file' : 'directory',
     path: n.path,
+    summary: n.summary,
     children: n.children
       ? normalizeTree(
-          n.children as Array<{ name: string; type: string; path: string; children?: unknown[] }>,
+          n.children as Array<{
+            name: string;
+            type: string;
+            path: string;
+            summary?: string;
+            children?: unknown[];
+          }>,
         )
       : undefined,
   }));
