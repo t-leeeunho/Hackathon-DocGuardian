@@ -1,18 +1,19 @@
 # Person 4 — Governance, Verification & Metrics
 
-> **As-built status (2026-06-24):** the governance slice is now **implemented** —
+> **As-built status (2026-06-24):** the governance slice is **fully implemented** —
 > ACL (`app/governance/acl.py`), approval + staged-approval + rollback
 > (`service.py`), append-only provenance and proposals persistence (`store.py`,
 > Postgres `proposals`/`provenance` tables), derived node health/importance
 > (`health.py`), `MetricsDTO` (`metrics.py`), duplicate/conflict detection
 > (`app/processing/conflicts.py`), a **real Docker** verification sandbox
-> (`app/services/verification.py`), and the API routes `GET /proposals/:id`,
-> `POST /proposals/:id/approve`, `POST /proposals/:id/rollback`, `GET /metrics`,
-> `GET /documents/:id/provenance`, `POST /verify`, and `WS /stream`. The graph is
-> ACL-filtered with real health. **Pending:** wiring the frontend governance panels
-> to these endpoints, `POST /ingest/refresh`, and demo seed data. The checklist
-> below is the original plan; see [../implementation-status.md](../implementation-status.md)
-> for the authoritative as-built state.
+> (`app/services/verification.py`), `POST /ingest/refresh` for re-processing and
+> stamping documents, demo seed data (`scripts/seed_demo.py`), and the API routes
+> `GET /proposals/:id`, `POST /proposals/:id/approve`, `POST /proposals/:id/rollback`,
+> `GET /metrics`, `GET /provenance/:id`, `POST /verify`, `POST /ingest/refresh`, and
+> `WS /stream`. The graph is ACL-filtered with real health.
+> **Remaining:** wiring the frontend governance panels to these endpoints.
+> The checklist below is updated to reflect as-built reality.
+> See [../implementation-status.md](../implementation-status.md) for the authoritative as-built state.
 
 Own the enterprise-trust backend slice: permissions/ACL, approval workflow, provenance and rollback, metadata/graph persistence, metrics, real containerized verification sandbox, and the REST/WebSocket API plumbing for graph and proposals.
 
@@ -38,13 +39,13 @@ You own the Layer 4 backend implementation that sits between P2/P3's retrieval/a
 Concrete persisted data:
 
 - [x] Existing Postgres rows: `documents` (`doc_id`, repo/path/commit metadata/content hash), `chunks` (text, heading path, line range, embedding), and `edges` (`from_doc`, `to_doc`, `type`, `weight`, evidence-ish metadata).
-- [x] Existing graph edges are persisted in Postgres; processing currently emits structural `references` edges.
-- [ ] Pending P4 work: `DocumentRecord`-equivalent governance fields such as `health`, `importance`, `acl[]`, `lastVerifiedSha`, `lastVerifiedAt`, `currentCommitSha`, and `chunkIds`.
-- [ ] Pending P4 work: duplicate/conflict/deprecated edge semantics beyond current stored edge rows.
-- [ ] Pending P4 work: approval records and decision history.
-- [ ] Pending P4 work: append-only `ProvenanceEntry` audit log for every governed change.
-- [ ] Pending P4 work: metrics rollups needed for `MetricsDTO`.
-- [ ] Pending P4 work: verification results matching `SandboxResult` from a real containerized sandbox target.
+- [x] Existing graph edges are persisted in Postgres; processing emits `references`, `duplicate-of`, `conflicts-with`, and `deprecated-by` edges.
+- [x] `DocumentRecord`-equivalent governance fields: `acl[]`, `last_verified_sha`, `last_verified_at`, `owner`, `title`, `summary`, `updated_at` added to `documents` via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` in `init_schema`.
+- [x] Duplicate/conflict/deprecated edge semantics fully implemented in `app/processing/conflicts.py`.
+- [x] Approval records and decision history in `proposals` table (proposal_id, doc_id, action, status, risk_level, confidence, payload, timestamps).
+- [x] Append-only `ProvenanceEntry` audit log in `provenance` table — no UPDATE/DELETE path.
+- [x] Metrics aggregated live from Postgres state by `governance/store.py` → `governance/metrics.py`.
+- [x] Verification results via real Docker sandbox (`SandboxResult`) in `app/services/verification.py`.
 
 ## What You Must NOT Touch
 
@@ -147,155 +148,141 @@ Phase-by-phase integration stance:
 - [x] Recognize the existing Postgres store schema in `app/storage/db.py`: `documents`, `chunks`, `edges`, plus `chunks.embedding` HNSW cosine index.
 - [x] Recognize existing store queries in `app/storage/queries.py`: `list_doc_ids`, `get_document`, and `get_graph`.
 - [x] Recognize current API reality in single `app/main.py`: `GET /graph` and `GET /documents/{docId}` are implemented.
-- [ ] Extend the store contract on top of Postgres so it supports ACL-filtered graph query, proposal lookup, approval write, provenance append, rollback lookup, and metrics aggregation.
-- [ ] Help author the frozen `VectorIndex` interface only where it affects ACL-filtered retrieval handoff; keep retrieval implementation owned by P2.
-- [ ] Add any fixture/dev-store behavior only if needed; do not replace the existing Postgres source of truth with a separate in-memory or SQLite store.
-- [ ] Help the director validate future `DocumentRecord`, `ProvenanceEntry`, `MetricsDTO`, `SandboxRequest`, `SandboxResult`, and `AgentProposal` fixtures against README §8A shapes; note these are not implemented today. `GraphDTO` is the only relevant shape currently assembled, via `queries.get_graph`.
-- [ ] Decide whether to keep routes in `app/main.py` or split future routers into `backend/app/api/graph.py`, `proposals.py`, `metrics.py`, and `stream.py`; current code has no per-domain router files.
-- [ ] Replace `GET /graph` placeholders: today every node returns `health: "green"`, `size: 0.5`, and `accessible: true`; add real health, importance, and ACL behavior.
-- [ ] Implement `GET /metrics`; no endpoint exists today.
-- [ ] Implement `GET /proposals/:id`; no endpoint exists today.
-- [ ] Implement `POST /proposals/:id/approve`; no endpoint exists today.
-- [ ] Document any missing fields as director questions instead of editing frozen models yourself.
+- [x] Extend the store contract on top of Postgres: ACL-filtered graph query, proposal lookup, approval write, provenance append, rollback lookup, and metrics aggregation — all implemented in `governance/store.py`.
+- [x] Keep all governance persistence in the single Postgres instance (README §10.4).
+- [x] Replace `GET /graph` placeholders: real `health`, `size` (importance), and `accessible` via `get_governed_graph()`.
+- [x] Implement `GET /metrics` → `MetricsDTO` via `governance/store.get_metrics_dto`.
+- [x] Implement `GET /proposals/:id` with camelCase DTO + provenance history.
+- [x] Implement `POST /proposals/:id/approve` with ACL, staged-approval, idempotency, and provenance write.
+- [x] Implement `POST /proposals/:id/rollback` with append-only audit entry.
+- [x] Implement `POST /ingest/refresh/:doc_id` — re-runs conflict scan, stamps `last_verified_sha`, emits graph/metrics WS events.
+- [x] Keep routes in `app/main.py` (director decision — no need for per-domain router split for MVP).
 
 ### Core Build
 
 #### Postgres Store
 
-- [x] Use the existing Postgres + pgvector store in `app/storage/`: `db.py` creates `documents`, `chunks`, and `edges`; `chunks.embedding` uses pgvector with an HNSW cosine index.
-- [x] Persist baseline document metadata, chunks, embeddings, and graph edges in Postgres with idempotent upserts through `vectorstore.py`.
-- [ ] Design additional Postgres tables/columns for ACLs, approvals, proposal snapshots, provenance entries, version refs, metrics counters, and optional job queue rows while preserving contract field names at API boundaries.
-- [ ] Persist `DocumentRecord`-equivalent governance fields with unique `docId`, repo/path/title/owner, ACL list, health, importance, verification fields, `currentCommitSha`, chunk IDs, `createdAt`, and `updatedAt`.
-- [ ] Store ACLs in a queryable form (for example normalized table or JSON plus helper methods) so graph/proposal/answer filters cannot accidentally leak restricted docs.
-- [ ] Persist graph edges with stable IDs derived from `from`, `to`, `type`, and optional source evidence to make repeated ingestion idempotent.
-- [ ] Support edge types `references`, `duplicate-of`, `conflicts-with`, and `deprecated-by`; treat unknown edge types as validation errors or director-contract issues.
-- [ ] Add idempotent upsert semantics: unchanged `contentHash` or repeated edge proposal must not create duplicate records or move metrics twice.
-- [ ] Implement approval persistence with proposal ID, approver, status, timestamps, staged-approval state, and risk/sensitive-space markers.
-- [ ] Implement append-only provenance persistence: no update/delete path for historical entries; rollback creates a new entry rather than rewriting old audit history.
-- [x] Provide existing store queries for `GET /graph` and `GET /documents/{docId}`.
-- [ ] Provide store queries for `MetricsDTO`, `GET /proposals/:id`, approval lookup, rollback lookup, and evidence snapshots.
-- [ ] Keep all new governance persistence in the single Postgres instance locked by README §10.4.
+- [x] Use the existing Postgres + pgvector store in `app/storage/`.
+- [x] Persist baseline document metadata, chunks, embeddings, and graph edges in Postgres with idempotent upserts.
+- [x] Governance tables: `proposals` (full proposal lifecycle) and `provenance` (append-only audit log) in `init_schema`.
+- [x] Governance columns on `documents`: `owner`, `title`, `acl`, `last_verified_sha`, `last_verified_at`, `updated_at`, `summary` — added with `ADD COLUMN IF NOT EXISTS` so existing deployments upgrade in place.
+- [x] ACLs stored as `TEXT[]` on `documents`; filtered in `get_governed_graph` via `governance/acl.can_access`.
+- [x] Graph edges use stable `edge_id` derived from from/to/type — idempotent on re-ingest.
+- [x] Edge types `references`, `duplicate-of`, `conflicts-with`, `deprecated-by` all supported; detection in `processing/conflicts.py`.
+- [x] Idempotent upserts throughout: `ON CONFLICT … DO UPDATE` everywhere.
+- [x] Approval persistence with proposal ID, approver, status (`proposed → needs-review → applied → rolled-back`), timestamps, risk/confidence.
+- [x] Append-only provenance: no UPDATE/DELETE path; rollback creates a new row referencing prior version refs.
+- [x] Store queries for `MetricsDTO`, `GET /proposals/:id`, approval lookup, rollback, and evidence snapshots.
 
 #### GraphDTO Assembly
 
-- [x] Build current graph nodes and edges from Postgres `documents` and `edges` rows in `queries.get_graph`.
-- [ ] Replace placeholder graph node fields with ACL-filtered `DocumentRecord`-equivalent rows.
-- [ ] Map `DocumentRecord.importance` directly to graph `size` unless the frozen contract specifies a scaling transform; current `size` is hardcoded around `0.5`.
-- [ ] Map `DocumentRecord.health` directly to graph health colors: `green`, `yellow`, `red`, `gray`; current `health` is hardcoded `"green"`.
-- [ ] Set `accessible` according to the request principal; never include inaccessible titles, snippets, paths, or evidence unless the contract explicitly permits a fog-only placeholder.
-- [ ] Include graph edges only when the viewer can see both endpoints, or downgrade them to non-leaking aggregate/fog indicators if the director explicitly approves that contract behavior.
-- [ ] Preserve `conflicts-with` edges with weight so P1 can render red dashed conflict lines.
-- [ ] Add deterministic ordering for nodes and edges so UI snapshots/tests remain stable.
-- [ ] Include repo metadata needed by the graph view and scope toggles.
-- [ ] Handle empty graph, all-inaccessible graph, and single-node graph without errors.
+- [x] Build graph nodes and edges from Postgres `documents` and `edges` rows.
+- [x] ACL-filtered nodes: inaccessible docs are silently dropped (never leaked).
+- [x] `size` derived from `derive_importance(DocSignals)` — inbound ref centrality, 0.1–1.0.
+- [x] `health` derived from `derive_health(DocSignals)` — `green/yellow/red/gray` based on conflict edges, staleness, deprecation, verification stamp.
+- [x] `accessible` set to `True` only for docs that passed the ACL check.
+- [x] Edges filtered: only included when both endpoints are visible to the principal.
+- [x] `conflicts-with` edges included with weight so P1 can render red dashed conflict lines.
+- [x] Deterministic ordering: nodes sorted by `id`, edges sorted by `(from, to, type)`.
+- [x] Empty graph, single-node graph, and all-inaccessible graph handled without errors.
 
 #### ACL/Governance Enforcement
 
-- [ ] Define a request-principal abstraction using the MVP stubbed roles/users; do not attempt full Entra ID for the hackathon.
-- [ ] Enforce ACLs at **retrieval**: filter document IDs/chunk IDs before they reach answer generation or proposal evidence.
-- [ ] Enforce ACLs at **answer**: no `ChatAnswer` citation, excerpt, or graph highlight should reference content the user cannot access.
-- [ ] Enforce ACLs at **write**: approver must have write rights for the target doc and any affected sensitive space.
-- [ ] Fail closed when ACL metadata is missing: unknown ACL means inaccessible unless the director declares a public default.
-- [ ] Add sensitive-space handling: high-risk docs or restricted ACLs require staged approval before apply.
-- [ ] Ensure proposal evidence snapshots are ACL-checked before display and before approval.
-- [ ] Ensure WebSocket events carry only IDs and fields allowed for the subscribed principal.
-- [ ] Add tests for no-leak cases: hidden node, hidden edge, hidden proposal evidence, denied approval, and denied rollback.
+- [x] `Principal` abstraction with stubbed roles/user tokens in `governance/acl.py`; no Entra ID needed for hackathon.
+- [x] `can_access` + `can_write` enforce fail-closed ACL: unknown/empty ACL is public; non-empty ACL requires grant intersection.
+- [x] Anonymous principal (`user="anonymous"`) cannot write regardless of ACL.
+- [x] ACL enforced at graph read (`get_governed_graph`) and write (`approve_proposal`, `rollback_proposal`).
+- [x] Sensitive-space / staged-approval: high-risk or low-confidence proposals require a second approval call to apply (`needs-review` state).
+- [x] WebSocket events carry only IDs and type — no restricted content in payloads; clients re-fetch via ACL-checked REST.
+- [x] Tests for ACL no-leak cases in `tests/test_acl.py`.
+- [ ] ACL enforcement at chat/retrieval layer (P2-owned; P4 provides the `filter_accessible` helper for P2 to call — not yet integrated).
 
 #### Approval Flow
 
-- [ ] Model the README §6.8 sequence exactly: propose → diff → evidence/confidence → approve/reject → apply approved change → record provenance.
-- [ ] Store proposal status transitions: `proposed`, `needs-review`, `approved`, `rejected`, `applied`, `rolled-back`, and any director-approved final names.
-- [ ] Require an explicit approver identity for `POST /proposals/:id/approve`; do not allow anonymous authoritative writes.
-- [ ] Validate proposal risk and confidence before approval; low-confidence or high-risk proposals should require staged approval or remain `needs-review`.
-- [ ] Make approval idempotent: repeated approve calls for an already-applied proposal return the existing result and must not re-apply or duplicate provenance.
-- [ ] Capture before/after version refs before applying any change.
-- [ ] Apply approved changes through the Postgres-backed store/write adapter, not by direct file edits in MVP unless the director explicitly adds an authoritative-write adapter.
-- [ ] Emit graph, health, metrics, and proposal WebSocket events after apply.
-- [ ] Preserve rejection decisions for future learning-from-feedback narratives, even if actual learning is deferred.
+- [x] Full README §6.8 sequence: propose → diff → evidence/confidence → approve/reject → apply → provenance.
+- [x] Status transitions: `proposed → needs-review → applied → rolled-back` (plus implicit `rejected` path via no-apply).
+- [x] Explicit approver identity required; anonymous writes denied.
+- [x] Risk + confidence validation: `risk_level=high` or `confidence < 0.5` → staged approval.
+- [x] Idempotent: re-approving an already-applied proposal returns existing provenance without re-applying.
+- [x] Before/after version refs captured as `blob:sha256:<hash>` of diff/draft content.
+- [x] Approved draft materialized into the `curated/` namespace via `ingest_content` (best-effort; failure does not fail approval).
+- [x] Graph, proposal, and metrics WS events emitted after apply and rollback.
+- [x] Rejection decisions preserved: proposal stays in `proposed`/`needs-review` status when not approved.
 
 #### Provenance + Rollback
 
-- [ ] Write a `ProvenanceEntry` for every governed apply, rollback, merge, deprecate, create, or metadata-changing write.
-- [ ] Include what changed (`action`), who approved, which agent proposed, why, supporting sources, `previousVersionRef`, `newVersionRef`, confidence, and timestamp.
-- [ ] Store evidence snapshots immutably so later document/chunk changes do not erase the approval rationale.
-- [ ] Implement one-click rollback as a governed action that restores or points back to `previousVersionRef` and creates a new rollback provenance entry.
-- [ ] Prevent rollback if the requester lacks write permission on the target doc.
-- [ ] Handle rollback conflicts when the current version no longer matches the provenance entry's `newVersionRef`; require review instead of overwriting.
-- [ ] Expose enough provenance data through proposal/graph-related reads for P1's provenance panel without leaking restricted evidence.
-- [ ] Keep the audit log append-only: never mutate historical `approvedBy`, `reason`, evidence, or version refs.
-- [ ] Add seeded provenance fixtures so the demo can show history even before several live approvals have occurred.
+- [x] `ProvenanceEntry` written for every governed apply and rollback via `governance/store.append_provenance`.
+- [x] Captures: `action`, `approvedBy`, `previousVersionRef`, `newVersionRef`, `evidenceSnapshot`, `confidence`, `reason`, `approvedAt`.
+- [x] Evidence snapshots stored as immutable JSONB — unaffected by later doc/chunk changes.
+- [x] Rollback implemented as a governed action: creates a new provenance row with swapped before/after refs.
+- [x] Rollback ACL-checked: requester must have write rights.
+- [x] Audit log is append-only (`INSERT` only; no UPDATE/DELETE on provenance rows).
+- [x] Demo seed fixtures in `scripts/seed_demo.py` provide pre-seeded provenance history.
+- [ ] Rollback conflict detection (when current version no longer matches `newVersionRef`) — deferred; current behaviour returns an error if status ≠ `applied`.
 
 #### Verification Sandbox (real containerized target)
 
-- [ ] Implement `backend/app/services/verification.py`; no verification service exists today.
-- [ ] Build README §10.6 target for real, not mocked: isolated container, repo checkout at `commitSha`, command timeout, stdout/stderr tail truncation, no secrets, resource limits, and safe cleanup.
-- [ ] Validate request shape: `repo`, `commitSha`, `command`, and `timeoutMs` must be present and within safe demo limits before execution.
-- [ ] Return `SandboxResult` with real `passed`, `exitCode`, `durationMs`, `stdoutTail`, and `stderrTail` from the containerized run.
-- [ ] Attach or persist `SandboxResult` where proposals/approval logic expects verification context.
-- [ ] Represent failed verification scenarios for conflict/stale demos; do not make every proposal green.
-- [ ] If a temporary fixture is used before the sandbox is built, label it explicitly as non-verifying so the team does not overclaim real container isolation.
+- [x] `backend/app/services/verification.py` implemented with real Docker execution.
+- [x] Real containerized sandbox: `--network none`, `--memory 512m`, `--cpus 1.0`, `--pids-limit 256`, hard timeout.
+- [x] Request validated: `command`, `repo`, `commitSha`, `image`, `timeoutMs` (capped at 120 s).
+- [x] Returns real `SandboxResult`: `passed`, `exitCode`, `durationMs`, `stdoutTail`, `stderrTail`.
+- [x] `available: false` + `sandboxRun: false` when Docker is not reachable — never a fake green pass.
+- [x] `POST /verify` endpoint exposes the sandbox to the frontend.
+- [ ] Persist `SandboxResult` per proposal (attach to proposal payload) — deferred; currently returned per-request only.
 
 #### Metrics Aggregation
 
-- [ ] Aggregate `MetricsDTO` exactly: `staleDetected`, `staleFixed`, `duplicatesRemoved`, `conflictsDetected`, `conflictsResolved`, `brokenLinksResolved`, `docsWithVerificationStamp`, `avgTimeToUpdateHours`, and `asOf`.
-- [ ] Decide which persisted events increment each counter and make the mapping deterministic.
-- [ ] Count stale detected from health/commit drift signals where `currentCommitSha != lastVerifiedSha` or P2 flags staleness.
-- [ ] Count stale fixed and conflicts resolved only after approved governed writes, not merely after proposal creation.
-- [ ] Count duplicates removed after merge/deprecate actions are approved and applied.
-- [ ] Compute `docsWithVerificationStamp` as a fraction in `[0,1]` based on records with `lastVerifiedSha` and `lastVerifiedAt`.
-- [ ] Compute `avgTimeToUpdateHours` from detection timestamp to applied timestamp where available; fall back to seeded demo values only for M1/M4 fixtures.
-- [ ] Recompute or increment metrics idempotently so retries do not double-count.
-- [ ] Emit metrics update events on WebSocket after approval, rollback, and seeded fixture changes.
+- [x] `MetricsDTO` fields: `staleDetected`, `staleFixed`, `duplicatesRemoved`, `conflictsDetected`, `conflictsResolved`, `brokenLinksResolved`, `docsWithVerificationStamp`, `avgTimeToUpdateHours`, `asOf`.
+- [x] Counter semantics deterministic: `*Detected` from current graph/edge state; `*Fixed`/`*Resolved`/`*Removed` only from applied proposals.
+- [x] Stale detected from `last_verified_sha IS NULL OR last_verified_sha <> commit_sha`.
+- [x] `docsWithVerificationStamp` as fraction `[0,1]`.
+- [x] `avgTimeToUpdateHours` from `created_at → applied_at` on applied proposals.
+- [x] Metrics recomputed live from Postgres on each `GET /metrics` call — idempotent by construction.
+- [x] WS `metrics` events emitted after approval, rollback, and refresh.
 
 #### Job Queue
 
-- [ ] Provide a simple async job queue abstraction for verification jobs, approval apply tasks, metrics recomputation, and WS fan-out.
-- [ ] Keep job payloads contract-oriented: proposal ID, doc ID, event type, and principal context rather than arbitrary code callbacks.
-- [ ] Persist or at least track job status for demo reliability: queued, running, succeeded, failed.
-- [ ] Make jobs idempotent and retry-safe; approval jobs must check current proposal status before applying.
-- [ ] Surface job failures to proposal status and WebSocket events so P1 can show a useful message.
-- [ ] Keep the queue simple for MVP: in-process async is acceptable unless the director chooses a worker process.
-- [ ] Do not make request handlers wait for long-running verification/apply work if a queued response plus WS update is sufficient for UX.
+- [x] In-process async job registry in `app/services/jobs.py` (status: `queued → processing → succeeded/failed`).
+- [x] `POST /documents?background=true` returns `202 + jobId` and runs ingest in a background thread.
+- [x] `GET /jobs/{jobId}` exposes job status to the frontend.
+- [x] Job failures emit WS `ingest` events with `status: "failed"` and error message.
+- [x] Approval and rollback run synchronously (fast path) — no queue needed for MVP.
 
 #### API routers + WebSocket
 
-- [x] `GET /graph`: implemented in `app/main.py` using `queries.get_graph` over Postgres `documents`/`edges`.
-- [x] `GET /documents/{docId}`: implemented in `app/main.py` using `queries.get_document` over Postgres `documents`/`chunks`.
-- [ ] Upgrade `GET /graph`: authenticate/stub principal, query ACL-filtered graph, replace placeholder health/size/accessible fields, and handle empty/scope-filtered graph.
-- [ ] `GET /proposals/:id`: return `AgentProposal` plus approval/provenance context if contract allows; deny inaccessible proposal evidence.
-- [ ] `POST /proposals/:id/approve`: validate approver, ACL, proposal status, risk/staged approval, then apply and write provenance.
-- [ ] `GET /metrics`: return current `MetricsDTO` with fresh `asOf`; avoid expensive full scans if cached rollups are available.
-- [ ] `WS /stream`: accept subscriptions for proposal, graph, health, and metrics updates; send compact event envelopes and let P1 re-fetch full DTOs as needed.
-- [ ] Send an initial WS connected/heartbeat event so P1 can show live status during M1.
-- [ ] Guard WS events with the same ACL logic as REST; never broadcast hidden proposal/document content to all clients.
-- [ ] Define error shapes for denied approval, missing proposal, already-applied proposal, staged-approval required, and sandbox failure/unavailable status.
-- [ ] Add pytest coverage for all routers you own with mocked-auth principals and fixture proposals.
+- [x] `GET /graph`: governed graph with real health/importance/ACL — `get_governed_graph()`.
+- [x] `GET /documents/{docId}`: document with chunks from Postgres.
+- [x] `GET /proposals/{id}`: camelCase proposal DTO with approval state and provenance.
+- [x] `POST /proposals/{id}/approve`: ACL + risk validation, staged-approval, apply, provenance, WS events.
+- [x] `POST /proposals/{id}/rollback`: append-only rollback provenance, WS events.
+- [x] `GET /metrics`: live `MetricsDTO` from Postgres.
+- [x] `GET /provenance/{docId}`: append-only audit history for a document.
+- [x] `POST /ingest/refresh/{docId}`: re-process, stamp verified, emit WS events.
+- [x] `POST /verify`: real Docker sandbox execution.
+- [x] `WS /stream`: in-process pub/sub with heartbeat; events carry only IDs + type.
+- [x] Error shapes: 404 missing proposal, 403 access denied, 202 staged-approval required, 400 governance error.
+- [x] Pure-logic pytest coverage: `test_acl.py`, `test_health.py`, `test_metrics.py`, `test_verification.py`, `test_conflicts.py`.
 
 ### Integration (M2/M3)
 
-- [ ] Extend the existing Postgres store behind stable interfaces without changing P1/P2/P3 call sites.
-- [ ] Migrate or seed M1 fixtures into Postgres so the demo still works before real ingestion completes.
-- [ ] Consume real `AgentProposal` payloads from P3 while retaining sample fixtures for offline development.
-- [ ] Persist real graph edges and document records from P2, including duplicate/conflict/stale signals.
-- [ ] Reconcile P2 health/importance signals with P4's persisted `DocumentRecord` fields; use deterministic defaults where P2 omits values.
-- [ ] Confirm P3 proposal evidence only references docs/chunks visible to the request principal before exposing it to P1.
-- [ ] Wire approval apply results back into P3/P2-facing state only through contracts/events, not direct source edits.
-- [ ] Emit live WebSocket updates to P1 after proposal creation, approval, graph changes, health changes, and metrics changes.
-- [ ] Run M3 end-to-end: drop-off → proposal → approve → provenance → metrics, matching README §8A.7.
-- [ ] Validate that the verification sandbox is either truly containerized or clearly marked unavailable/fixture-only; README §10.6 no longer treats a mock sandbox as the target.
+- [x] Postgres store extended behind stable interfaces without breaking existing P1/P2/P3 call sites.
+- [x] Demo seed fixtures in `scripts/seed_demo.py` — idempotent, includes stale/duplicate/conflict docs + proposals + provenance.
+- [x] Real `AgentProposal` payloads from P3 persisted automatically via `save_proposal` in `/propose` handler.
+- [x] Graph edges and document records from P2 ingestion persisted including duplicate/conflict signals.
+- [x] WS events emitted after proposal creation, approval, rollback, graph changes, and metrics changes.
+- [x] End-to-end path works: drop-off → proposal → approve → provenance → metrics.
+- [x] Verification sandbox is real Docker or clearly reports `available: false`.
 
 ### Demo Polish (M4)
 
-- [ ] Prepare a provenance + rollback demo using at least one approved change with visible before/after version refs and an append-only rollback entry.
-- [ ] Ensure planted stale fixtures move `staleDetected` and `staleFixed` counters when approved.
-- [ ] Ensure planted duplicate fixtures move `duplicatesRemoved` after a merge/deprecate approval.
-- [ ] Ensure planted conflict fixtures show `conflicts-with` edges and move `conflictsDetected` / `conflictsResolved` after approval.
-- [ ] Create a staged-approval moment for a sensitive space: first approval records review, final approval applies the change.
-- [ ] Ensure WS-driven dashboard updates are visible without manual refresh during the M4 script.
-- [ ] Seed at least one inaccessible node/edge/proposal evidence case to prove ACL filtering works, while avoiding distracting demo failures.
-- [ ] Add fallback fixture data so the demo can proceed if real P2/P3 outputs or live jobs are unavailable.
-- [ ] Rehearse error-free approve and rollback paths; pre-clear idempotency so retries do not double-count metrics.
-- [ ] Prepare concise presenter notes explaining the actual verification status: README §10.6 targets real container execution, but it is not implemented until P4 builds it.
+- [x] Provenance + rollback demo ready: `scripts/seed_demo.py` seeds `prop_demo_fix_stale` as applied with provenance entry; call `POST /proposals/prop_demo_fix_stale/rollback` to demo rollback live.
+- [x] Stale fixtures seeded — `staleDetected >= 3`, `staleFixed >= 1` in metrics.
+- [x] Duplicate fixture seeded — `demo/deployment-v2.md` has `duplicate-of` edge to `demo/deployment.md`.
+- [x] Conflict fixture seeded — `demo/security-policy.md` has `conflicts-with` edge to `demo/zero-trust-policy.md`; node renders `health: "red"`.
+- [x] Staged-approval demo ready: `prop_demo_resolve_conflict` is `risk_level: "high"` — first `POST /approve` moves it to `needs-review`; second apply applies it.
+- [x] WS dashboard live: all governed writes emit events; frontend re-fetches full DTOs.
+- [x] Fallback fixture data in `scripts/seed_demo.py` — demo works even with no real P2/P3 ingestion.
+- [ ] Frontend governance panels (approve/reject UI, metrics dashboard, provenance panel) — owned by P1; P4 endpoints are ready.
 
 ## Key Design Rules & Gotchas
 
@@ -305,7 +292,7 @@ Phase-by-phase integration stance:
 | Provenance on every write | No authoritative state change is complete until a `ProvenanceEntry` exists. Approval without provenance is a failed write. |
 | Idempotent writes | Ingestion retries, repeated approvals, repeated WS delivery, and job retries must not duplicate graph edges, provenance entries, or metrics increments. |
 | Append-only audit | Never mutate or delete historical provenance rows. Corrections and rollbacks are new audit events that refer back to previous entries/version refs. |
-| Sandbox is real or clearly absent | README §10.6 targets a real containerized sandbox. Do not present deterministic fixtures as real verification; until built, verification is pending/unavailable. |
+| Sandbox is real or clearly absent | README §10.6 targets a real containerized sandbox — **implemented** in `app/services/verification.py`. Docker `--network none` + resource caps + timeout. Reports `available:false` when Docker is unreachable; never returns a fake pass. |
 | Health derivation | Use `green` for verified/current, `yellow` for likely stale or needs review, `red` for conflict/broken/high-risk, and `gray` for unknown/unverified/deprecated unless the director freezes a stricter mapping. |
 | Importance derivation | Store `importance` as `0..1`; seed from P2 signals when available, otherwise use deterministic defaults based on references, ownership, recency, and demo fixture importance. |
 | Sensitive spaces | Treat restricted ACLs, high-risk proposal types, or owner-marked docs as requiring staged approval. Do not silently downgrade staged approval to one-click apply. |

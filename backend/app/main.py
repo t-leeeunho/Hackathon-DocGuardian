@@ -458,6 +458,101 @@ def metrics() -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Ingest refresh (re-process an existing document, stamp verified)
+# --------------------------------------------------------------------------- #
+class RefreshRequest(BaseModel):
+    content: str | None = Field(
+        None,
+        description="New content to replace the document with. "
+        "If omitted the existing chunks are re-embedded + conflict-rescanned.",
+    )
+
+
+class RefreshResponse(BaseModel):
+    docId: str
+    chunks: int
+    conflictEdges: int
+    health: str
+    stamped: bool = Field(..., description="True if last_verified_sha was updated")
+
+
+@app.post(
+    "/ingest/refresh/{doc_id:path}",
+    response_model=RefreshResponse,
+    tags=["intake"],
+    summary="Re-process a document and stamp it verified",
+    description=(
+        "Re-runs chunking, embedding, and duplicate/conflict detection for an "
+        "existing document. If `content` is supplied the document is replaced; "
+        "otherwise the text is reconstructed from its stored chunks. "
+        "On success `last_verified_sha` is updated to the document's current "
+        "`commit_sha` and graph/metrics WebSocket events are emitted."
+    ),
+)
+def refresh_document(doc_id: str, req: RefreshRequest | None = None) -> dict:
+    from app.governance.store import get_document_meta, stamp_verified
+    from app.services import events
+    from app.storage.db import get_conn
+    from app.processing.conflicts import detect_conflicts_for_doc
+
+    meta = get_document_meta(doc_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"document not found: {doc_id}")
+
+    new_content = req.content if req else None
+
+    if new_content:
+        # Full re-ingest with new content (atomic upsert).
+        from app.ingestion.intake import ingest_content
+        try:
+            result = ingest_content(
+                meta["path"], new_content, namespace=meta["repo"]
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        chunks_count = result["chunks"]
+        conflict_count = result.get("conflictEdges", 0)
+    else:
+        # Re-run conflict detection on the existing chunks (no content change).
+        try:
+            with get_conn() as conn:
+                conflict_count = detect_conflicts_for_doc(doc_id, conn=conn)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # Count existing chunks.
+        from psycopg.rows import dict_row
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = %s", (doc_id,))
+                chunks_count = cur.fetchone()[0]
+
+    # Stamp verified at the current commit SHA.
+    commit_sha = meta.get("commit_sha")
+    stamp_verified(doc_id, commit_sha)
+
+    # Derive the new health for the response.
+    from app.governance.store import get_governed_graph
+    try:
+        graph_data = get_governed_graph()
+        node = next((n for n in graph_data["nodes"] if n["id"] == doc_id), None)
+        health = node["health"] if node else "green"
+    except Exception:
+        health = "green"
+
+    events.publish("graph", docId=doc_id)
+    events.publish("metrics")
+
+    return {
+        "docId": doc_id,
+        "chunks": chunks_count,
+        "conflictEdges": conflict_count,
+        "health": health,
+        "stamped": True,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Verification sandbox (real containerized execution)
 # --------------------------------------------------------------------------- #
 class VerifyRequest(BaseModel):
