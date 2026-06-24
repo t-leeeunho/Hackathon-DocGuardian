@@ -26,14 +26,15 @@ planned (README §6, §10.6–10.7).
 | Storage | **Single PostgreSQL** (metadata + graph + audit/provenance) | ✅ Postgres tables: `documents`, `chunks`, `edges` (audit/approval/provenance tables **not yet**) |
 | Vector index | **pgvector** in the same Postgres | ✅ `chunks.embedding VECTOR(dim)` + HNSW cosine index |
 | Embeddings | Provider-abstracted; **local fastembed default**, Azure optional | ✅ `LocalEmbeddingProvider` (BAAI/bge-small-en-v1.5, 384-dim) / `AzureEmbeddingProvider` |
-| LLM agents | **Azure OpenAI** chat (one deployment), two agents | ✅ Curator + Guardian via **LangGraph**; Azure **required** for agents (503 otherwise) |
+| LLM agents | **Azure OpenAI** chat (one deployment), two agents | ✅ Curator + Guardian via **LangGraph**; Azure **default** (503 if unset), `CHAT_PROVIDER=fake` offline stand-in |
 | Frontend | React + TS + Vite + Tailwind + shadcn/ui + **React Flow (2D)** + **Monaco** | ❌ Not started |
 | Verification sandbox | Containerized, real (README §10.6) | ❌ Not implemented |
 | Governance/auth | Mocked auth + real ACL/approval/provenance on Postgres (README §10.7) | ❌ Not implemented |
 
 > Note: the local-first **fastembed default** means the whole ingestion + retrieval
-> path runs with **no Azure** at all. Azure is only needed for the `/chat` and
-> `/propose` agent endpoints.
+> path runs with **no Azure** at all. Azure is the default for the `/chat` and
+> `/propose` agent endpoints, but a deterministic `CHAT_PROVIDER=fake` provider now
+> lets those endpoints run with **no Azure** too (local dev, tests, demo rehearsal).
 
 ---
 
@@ -51,9 +52,9 @@ backend/
 │   ├── main.py                 # FastAPI app — ALL endpoints + camelCase API DTOs
 │   ├── tree.py                 # build_tree() for the left-sidebar file tree
 │   ├── agents/
-│   │   ├── graph.py            # LangGraph chat + propose graphs (Curator/Guardian)
-│   │   ├── llm.py              # Azure OpenAI chat factory (get_chat_llm) + AzureNotConfiguredError
-│   │   └── schemas.py          # Citation, ChatAnswer, AgentProposal (LLM structured output)
+│   │   ├── graph.py            # LangGraph chat + propose graphs; no-evidence short-circuit + evidence gate
+│   │   ├── llm.py              # Chat factory: CHAT_PROVIDER azure|fake (get_chat_llm) + FakeChatLLM + AzureNotConfiguredError
+│   │   └── schemas.py          # Citation/Evidence/ProposalDiff/Verification, ChatAnswer, CuratorDraft, GuardianReview, AgentProposal
 │   ├── embeddings/
 │   │   └── provider.py         # EmbeddingProvider ABC + Local (fastembed) + Azure
 │   ├── ingestion/
@@ -120,31 +121,43 @@ There are **three layers** of models — not one frozen camelCase package:
    (`Match`, `SearchResponse`, `GraphNode`, `GraphResponse`, `DocumentResponse`, …)
    plus camelCase dicts from `app/storage/queries.py`. This is where the camelCase
    contract the frontend will consume actually lives.
-3. **Agent structured outputs** — `app/agents/schemas.py`: `Citation`,
-   `ChatAnswer` (`answer`, `citations`, `confidence`, `needs_human_review`; `scope`
-   added at runtime), and `AgentProposal` (`action`, `target_doc_id`, `draft`,
-   `citations`, `confidence`, `risk_level`, `conflicts_with`, plus Guardian fields
-   `recommendation`, `guardian_reasoning`, `uncertainty`).
+3. **Agent structured outputs** — `app/agents/schemas.py`. Two layers: lean LLM
+   I/O schemas the model fills — `ChatAnswer` (`answer`, `scope`, `citations`,
+   `confidence`, `needs_human_review`), `CuratorDraft` (drafting surface), and
+   `GuardianReview` (judgment surface) — plus the richer response contract
+   `AgentProposal` aligned with README §8A.4 (`proposal_id`, `action`,
+   `target_doc_id`, `source_doc_ids`, `diff{}`, `draft`, `citations`, `evidence[]`,
+   `confidence`, `risk_level`, `conflicts_with`, `verification{}`, Guardian fields
+   `recommendation`/`guardian_reasoning`/`uncertainty`, `proposed_by`, `created_at`).
+   New `Evidence`, `ProposalDiff`, and `Verification` sub-models support it.
 
-> The implemented `AgentProposal` is a **streamlined** version of README §8A.4 —
-> it does **not** yet include `proposalId`, `sourceDocIds`, a structured `diff{}`,
-> an `evidence[]` array, or a `verification{}` block. Treat README §8A as the
-> long-term target, and `schemas.py` as today's reality.
+> `AgentProposal` now carries the README §8A.4 fields (`proposal_id`,
+> `source_doc_ids`, `diff{}`, `evidence[]`, `verification{}`), but they are assembled
+> **deterministically by the graph** from retrieved rows — the model only fills the
+> lean `CuratorDraft`/`GuardianReview`, never provenance. `verification` stays `null`
+> until the P4 sandbox runs.
 
 ---
 
 ## 6. Agent Design (as built — LangGraph)
 
 Two compiled LangGraph graphs share one deterministic retrieval node + the two
-Azure-backed agents:
+chat agents (Azure by default, or the offline fake via `CHAT_PROVIDER=fake`):
 
 - `/chat`: `retrieve → curator` → `ChatAnswer` (**1 LLM call**).
-- `/propose`: `retrieve → curator(draft) → guardian(review)` → `AgentProposal` (**2 LLM calls**).
+- `/propose`: `retrieve → {curator(draft) → guardian(review) | no_evidence}` →
+  `AgentProposal` (**≤2 LLM calls**). A conditional route runs the **no-evidence
+  short-circuit** (`no_evidence_proposal_node`, no LLM) when retrieval is empty or
+  below `WEAK_EVIDENCE_THRESHOLD = 0.45`.
+- The LLM only fills lean schemas (`CuratorDraft`, `GuardianReview`, `ChatAnswer`);
+  the graph assembles the rich `AgentProposal` and grounds all provenance.
 - `retrieve_node` is **deterministic** (in-process pgvector search, no LLM).
-- Evidence guardrails: a `WEAK_EVIDENCE_THRESHOLD = 0.45` short-circuits to an
-  explicit "needs human review" answer with **no LLM cost** when the top score is
-  weak; `commit_sha` on every citation is **overwritten** with the authoritative
-  value from retrieved rows so the model can't hallucinate SHAs.
+- Evidence guardrails: weak chat evidence short-circuits to an explicit "needs human
+  review" answer with **no LLM cost**; `commit_sha` on every citation/evidence item
+  is **overwritten** with the authoritative value from retrieved rows; and a final
+  deterministic gate (`_finalize_proposal`, `LOW_CONFIDENCE_THRESHOLD = 0.5`) forces
+  `needs-review` on any proposal lacking grounded citations or below the confidence
+  floor — regardless of what the Guardian returned.
 - Guardian contributes only its judgment (`recommendation`, `guardian_reasoning`,
   `confidence`, `risk_level`, `conflicts_with`, `uncertainty`); the Curator's draft
   and grounded citations are preserved.
@@ -183,7 +196,9 @@ Azure-backed agents:
 | Postgres + pgvector store + cosine search | ✅ Implemented |
 | Drop-off intake (`/documents`) | ✅ Implemented (text only) |
 | Tree, graph, single-document endpoints | ✅ Implemented (graph health/size/accessible are placeholders) |
-| LangGraph Curator (`/chat`) + Curator→Guardian (`/propose`) | ✅ Implemented (needs Azure) |
+| LangGraph Curator (`/chat`) + Curator→Guardian (`/propose`) | ✅ Implemented (Azure default; `CHAT_PROVIDER=fake` offline) |
+| Richer `AgentProposal` (`proposalId`/`sourceDocIds`/`diff`/`evidence`/`verification`) | ✅ Implemented (`verification` null until P4 sandbox) |
+| Offline fake chat provider (`CHAT_PROVIDER=fake`) + no-evidence short-circuit + evidence gate | ✅ Implemented |
 | CLI tooling (`run_ingest`, `load_vectors`, `add_file`, `search`) | ✅ Implemented |
 | **Duplicate/conflict detection** (score ≥ 0.92 / ≥ 0.85 edges) | ❌ Pending |
 | **Node health / freshness scoring** | ❌ Pending (hardcoded `green`) |
@@ -192,7 +207,7 @@ Azure-backed agents:
 | **Verification sandbox** | ❌ Pending |
 | **WebSocket `/stream`, `/ingest/refresh`, proposal apply** | ❌ Pending |
 | **Frontend (entire)** | ❌ Pending |
-| **Dev tooling: ruff/black/pytest + tests** | ❌ Not configured |
+| **Dev tooling** | ⚠️ Partial — `pytest` configured for `backend/tests/` (agent layer); ruff/black still not configured |
 
 ---
 
@@ -211,8 +226,14 @@ python -m scripts.search "how do I build garnet"   # sanity-check retrieval
 # API:
 uvicorn app.main:app --reload --port 8000          # Swagger at /docs
 
-# Agents (/chat, /propose) additionally require Azure OpenAI env in .env:
+# Agents (/chat, /propose) use Azure OpenAI by default — set in .env:
 #   AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_CHAT_DEPLOYMENT
+# ...or run the agents offline with the deterministic fake (no Azure):
+#   $env:CHAT_PROVIDER="fake"   # /chat and /propose then work without Azure
+
+# Agent-layer tests (offline; no Azure, no Postgres):
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 ---
@@ -221,9 +242,11 @@ uvicorn app.main:app --reload --port 8000          # Swagger at /docs
 
 When reading the other docs, apply these corrections:
 - **Storage** is Postgres + pgvector (one instance), **not** SQLite + Chroma/FAISS.
-- **Embeddings** default to **local fastembed**; Azure is optional for embeddings
-  and **required only for the agents**.
-- **Agents** are built with **LangGraph**, not a hand-rolled orchestrator loop.
+- **Embeddings** default to **local fastembed**; Azure is optional for embeddings.
+  Agent **chat** defaults to Azure (503 if unset) but also has an offline
+  deterministic `CHAT_PROVIDER=fake` provider for dev/tests/demo.
+- **Agents** are built with **LangGraph**, not a hand-rolled orchestrator loop; the
+  `/propose` path has a no-evidence short-circuit and a final deterministic evidence gate.
 - The **API surface** is §4 above (README §8B), not the older §8A.5 table.
 - **Contracts** are snake_case core models + camelCase API DTOs + agent schemas —
   there is no single frozen camelCase `models/` package or `types.ts` yet.

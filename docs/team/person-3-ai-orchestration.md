@@ -1,6 +1,6 @@
 # Person 3 — Agent Orchestration & AI Reasoning
 
-> **As-built status (2026-06-23):** the LangGraph Curator/Guardian agents are implemented; see [../implementation-status.md](../implementation-status.md).
+> **As-built status (2026-06-23):** the LangGraph Curator/Guardian agents are implemented, plus an offline `CHAT_PROVIDER=fake` provider, the richer README §8A.4 `AgentProposal`, a no-evidence short-circuit, a deterministic proposal evidence gate, and an offline agent test suite (`backend/tests/`). See [../implementation-status.md](../implementation-status.md).
 
 Person 3 owns the reasoning core: a thin deterministic retrieval step plus the only two LLM-backed agents in DocGuardian AI, Curator and Guardian. As built, the thin orchestrator is realized as two compiled LangGraph graphs, not a hand-rolled loop.
 
@@ -126,10 +126,10 @@ Gap/TODO versus README §8A.4: `AgentProposal` does **not** yet include `proposa
 - [x] Implement embedding provider abstraction compatible with P2’s vector workflow; local fastembed is the default and Azure embeddings are optional.
 - [x] Add structured agent schemas for `Citation`, `ChatAnswer`, and streamlined `AgentProposal`.
 - [x] Confirm retrieved evidence includes doc IDs, commit SHAs, cited line ranges, and confidence/relevance values.
-- [ ] Add deterministic `FakeLLMProvider` behavior for Curator proposal generation, Guardian judgment, and chat answers.
-- [ ] Add chat provider abstraction/fake-local switch for offline development; chat is Azure-only today.
-- [ ] Expand `AgentProposal` toward the README §8A.4 target with `proposalId`, `sourceDocIds`, structured `diff{}`, `evidence[]`, and `verification{}`.
-- [ ] Coordinate with the director before changing frozen/shared contracts or moving files into a future `app/ai/**` layout.
+- [x] Add deterministic `FakeChatLLM` behavior for Curator proposal generation, Guardian judgment, and chat answers (selected by `CHAT_PROVIDER=fake`).
+- [x] Add chat provider abstraction/fake-local switch for offline development (`CHAT_PROVIDER` azure|fake in `llm.py`).
+- [x] Expand `AgentProposal` toward the README §8A.4 target with `proposal_id`, `source_doc_ids`, structured `diff{}`, `evidence[]`, and `verification{}` (verification stays null until P4 sandbox).
+- [x] Coordinate with the director before changing frozen/shared contracts or moving files into a future `app/ai/**` layout (director-sanctioned additive contract change; no file moves).
 
 ### Core Build
 
@@ -138,8 +138,8 @@ Gap/TODO versus README §8A.4: `AgentProposal` does **not** yet include `proposa
 - [x] Keep Azure OpenAI chat settings isolated in `backend/app/agents/llm.py`.
 - [x] Normalize missing Azure chat config into `AzureNotConfiguredError` so routers return safe HTTP 503s.
 - [x] Keep embeddings behind `EmbeddingProvider`; callers do not need to know local/Azure embedding details.
-- [ ] Implement fake-by-default chat provider selection for local/offline development.
-- [ ] Add provider-level tests for fake determinism, Azure config parsing, and schema-valid fake outputs.
+- [x] Implement opt-in fake chat provider selection (`CHAT_PROVIDER=fake`) for local/offline development. Azure stays the default to preserve the documented 503 contract.
+- [x] Add provider-level tests for fake determinism, Azure config parsing, and schema-valid fake outputs (`backend/tests/test_llm_provider.py`).
 
 #### Thin Orchestrator (routing rules)
 
@@ -149,7 +149,7 @@ Gap/TODO versus README §8A.4: `AgentProposal` does **not** yet include `proposa
 - [x] Keep `retrieve_node` deterministic: in-process pgvector search, no LLM call.
 - [x] Short-circuit weak chat evidence to an explicit human-review answer with no LLM cost.
 - [x] Enforce the normal LLM budget: one Curator call for chat; Curator plus Guardian for proposals.
-- [ ] Add richer proposal no-evidence handling before spending Curator/Guardian calls.
+- [x] Add richer proposal no-evidence handling before spending Curator/Guardian calls (`no_evidence_proposal_node`, routed at the 0.45 threshold — zero LLM cost).
 - [ ] Invoke P4 sandbox/verification after Curator drafts proposals that reference build/test/command/workflow correctness.
 - [ ] Wire P4 ACL/governance context into retrieval and Guardian judgment.
 
@@ -171,7 +171,7 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 - [x] Validate Curator chat/proposal outputs through Pydantic structured output schemas.
 - [x] Require citations to map back to supplied retrieved context; fill missing citations from retrieved rows.
 - [x] Overwrite citation `commit_sha` values from authoritative retrieved rows to prevent SHA hallucination.
-- [ ] Add structured `diff{}` and `evidence[]` output beyond the current `draft` + `citations` shape.
+- [x] Add structured `diff{}` and `evidence[]` output beyond the `draft` + `citations` shape (assembled deterministically by the graph from retrieved rows).
 - [ ] Test Curator with planted stale, duplicate, conflict, and low-confidence fixtures.
 
 #### Guardian Agent (prompt + judging)
@@ -189,8 +189,8 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 - [x] Return the explicit fallback idea when evidence is weak: `I'm not sure. The available documentation does not clearly answer this. This needs human review.`
 - [x] Set `needs_human_review` on weak-evidence chat answers.
 - [x] Preserve or synthesize citations from retrieved rows and force authoritative commit SHAs.
-- [ ] Add final deterministic evidence gates after every proposal output, not just chat weak-evidence gating.
-- [ ] Add tests proving low-confidence, no-citation, and missing-commit cases cannot pass as confident outputs.
+- [x] Add final deterministic evidence gates after every proposal output, not just chat weak-evidence gating (`_finalize_proposal`, `LOW_CONFIDENCE_THRESHOLD = 0.5`).
+- [x] Add tests proving low-confidence, no-citation, and missing-commit cases cannot pass as confident outputs (`backend/tests/test_evidence_gate.py`).
 
 #### Chat/RAG path
 
@@ -200,7 +200,7 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 - [x] Require citations to map to real `doc_id`s and line ranges/commit SHAs from retrieved context.
 - [x] Avoid proposal/Guardian work for ordinary informational chat.
 - [x] Return a useful `needs_human_review` answer when retrieval returns no or weak evidence.
-- [ ] Add tests for repo scope, all-accessible scope, empty retrieval, and low-confidence chat.
+- [x] Add tests for repo scope, all-accessible scope, empty retrieval, and low-confidence chat (`backend/tests/test_chat_graph.py`).
 
 #### API routers (`/propose`, `/chat`)
 
@@ -209,8 +209,8 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 - [x] Return HTTP 503 without leaking secrets when Azure chat config is missing.
 - [x] Do not persist proposals directly from the agent endpoint; proposal persistence/apply is not implemented yet.
 - [ ] Split endpoints into future router files only if the backend layout is intentionally refactored.
-- [ ] Return richer README §8A.4 proposal fields once those contracts are implemented.
-- [ ] Add router tests with fake providers and fixture retrieval after fake chat exists.
+- [x] Return richer README §8A.4 proposal fields now that the contract is implemented.
+- [x] Add router tests with the fake provider and fixture retrieval (`backend/tests/test_api_agents.py`).
 
 ### Integration (M2/M3)
 
@@ -232,7 +232,7 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 - [x] Ensure weak chat evidence triggers the human-review fallback with threshold `0.45`.
 - [x] Keep token usage low by trimming retrieval context to the most relevant chunks and preserving the one/two-call budgets.
 - [ ] Ensure the primary demo proposal shows richer evidence quotes, chunk IDs, commit SHAs, risk level, confidence, conflicts, and eventually a structured diff in a P1-friendly format.
-- [ ] Rehearse fallback mode after a `FakeLLMProvider` exists; offline chat/proposal demo is not implemented today.
+- [x] Offline chat/proposal demo is now possible via `CHAT_PROVIDER=fake` (deterministic `FakeChatLLM`); rehearse the fallback narrative against planted fixtures at M4.
 - [ ] Capture the final prompt/provider settings used for the demo in comments/config owned by P3, not in frozen contracts.
 - [ ] Run final backend quality gates once quality tooling is configured.
 
@@ -246,7 +246,7 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 | Retrieval stays LLM-free | Routing should be explainable, testable, and free. | `retrieve_node` uses pgvector search only. |
 | Evidence or review | DocGuardian must behave like an engineering tool, not a guessing chatbot. | Weak evidence produces explicit human review rather than a confident answer. |
 | Weak-evidence threshold is 0.45 as built | README says approximately 0.5, but code uses `WEAK_EVIDENCE_THRESHOLD = 0.45`. | Top retrieval score below 0.45 short-circuits chat with no LLM call. |
-| Azure chat is required today | There is no fake/local chat fallback yet. | Missing Azure env vars return HTTP 503 for `/chat` and `/propose`. |
+| Azure chat is the default; a fake exists | `/chat` + `/propose` use Azure by default and 503 when it is unset; `CHAT_PROVIDER=fake` gives a deterministic offline path. | Missing Azure env returns HTTP 503 under the default provider; `CHAT_PROVIDER=fake` runs offline. |
 | Never invent sources | Fake confidence is worse than no answer. | Citations must be selected from supplied retrieval context only. |
 | Commit SHAs are authoritative data | Models can hallucinate plausible SHAs. | Citation `commit_sha` is overwritten from retrieved rows. |
 | Guardian judges; Curator drafts | The Guardian should not erase grounded proposal content. | Guardian contributes recommendation/reasoning/risk/conflict/uncertainty fields while Curator draft + citations are preserved. |
@@ -258,7 +258,7 @@ Proposal instruction → retrieval → Curator draft AgentProposal
 
 - Describing `backend/app/ai/orchestrator.py` as implemented; it does not exist.
 - Describing split `curator.py` / `guardian.py` modules or `app/ai/providers/**` as implemented; they do not exist.
-- Claiming fake chat/offline LLM behavior exists; it is still pending.
+- Claiming fake chat/offline LLM behavior is the **default**; it exists only as the opt-in `CHAT_PROVIDER=fake` (Azure remains the default).
 - Letting routers make independent reasoning decisions that drift from the LangGraph graphs.
 - Returning a beautiful answer with no citations.
 - Returning citations without authoritative `commit_sha`.
@@ -279,8 +279,8 @@ Person 3’s slice is mostly built for the current backend, with richer governan
 - [x] Weak chat evidence below `0.45` forces the explicit human-review path with no LLM call.
 - [x] Citation commit SHAs are grounded by retrieved rows rather than model output.
 - [x] `/chat` and `/propose` are available in `backend/app/main.py` and return 503 if Azure chat is not configured.
-- [ ] Richer `AgentProposal` contract includes `proposalId`, `sourceDocIds`, structured `diff{}`, `evidence[]`, and `verification{}`.
-- [ ] Deterministic fake/local chat provider exists for offline development and demo rehearsal.
+- [x] Richer `AgentProposal` contract includes `proposal_id`, `source_doc_ids`, structured `diff{}`, `evidence[]`, and `verification{}` (verification null until P4 sandbox).
+- [x] Deterministic fake/local chat provider exists for offline development and demo rehearsal (`CHAT_PROVIDER=fake`).
 - [ ] Proposal persistence, approval/apply, provenance, rollback, ACL, sandbox verification, metrics, and frontend rendering are integrated.
-- [ ] Edge cases are tested: empty results, inaccessible docs, low confidence, failed sandbox, unresolved conflict, provider failure, and malformed model output.
-- [ ] Backend quality gates pass once repository lint/test tooling is configured.
+- [ ] Edge cases are tested: empty results, inaccessible docs, low confidence, failed sandbox, unresolved conflict, provider failure, and malformed model output. *(Done so far: empty/weak retrieval, low confidence, no-citation/missing-SHA gating, provider-failure 503; sandbox/ACL/conflict cases await P4.)*
+- [x] Backend agent-layer quality gate passes: `python -m pytest` (`backend/tests/`, fully offline). Repository-wide ruff/black are still unconfigured.

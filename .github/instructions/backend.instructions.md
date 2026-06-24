@@ -53,9 +53,10 @@ and `docs/implementation-status.md` for the current as-built backend.
   `/chat` is `retrieve → curator` (1 LLM call) and `/propose` is
   `retrieve → curator → guardian` (2 LLM calls). The retrieve node is deterministic
   pgvector search and uses no LLM.
-- Azure OpenAI chat is required for `/chat` and `/propose`; the endpoints return 503
-  if `AZURE_OPENAI_*` chat settings are missing. Do not assume a `FakeLLMProvider`
-  or local chat fallback exists.
+- Azure OpenAI chat is the **default** for `/chat` and `/propose`; the endpoints return
+  503 if `AZURE_OPENAI_*` chat settings are missing. An opt-in deterministic fake
+  (`CHAT_PROVIDER=fake`, `FakeChatLLM` in `app/agents/llm.py`) runs them offline for
+  local dev and tests; Azure stays the default so the 503 contract is preserved.
 
 ## Invariants in code
 

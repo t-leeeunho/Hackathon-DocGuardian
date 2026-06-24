@@ -29,9 +29,9 @@ rollback.
    currently a single `backend/app/main.py` file holding all endpoints, not per-domain
    routers. A future router split is allowed only as a coordinated refactor.
 3. **Use real implemented seams.** Ingestion/retrieval run locally with Postgres +
-   pgvector and local fastembed embeddings. `/chat` and `/propose` require Azure
-   OpenAI chat and return 503 if Azure is unconfigured; there is no fake/local chat
-   fallback in the implemented backend.
+   pgvector and local fastembed embeddings. `/chat` and `/propose` default to Azure
+   OpenAI chat and return 503 if Azure is unconfigured; an opt-in deterministic
+   `CHAT_PROVIDER=fake` provider (`FakeChatLLM`) runs them offline for dev/tests/demo.
 
 ## Stack & versions
 
