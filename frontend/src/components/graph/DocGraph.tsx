@@ -156,6 +156,42 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return () => clearTimeout(t);
   }, [graphData]);
 
+  // A surrounding starfield so it feels like a place in space, not flat black.
+  const starsAdded = useRef(false);
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || starsAdded.current || graphData.nodes.length === 0) return;
+    try {
+      const scene = fg.scene?.();
+      if (!scene) return;
+      const count = 1800;
+      const positions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        // points on a large spherical shell surrounding the scene
+        const r = 2600 + Math.random() * 1800;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3 + 2] = r * Math.cos(phi);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0x9fb4ff,
+        size: 2.4,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.75,
+        depthWrite: false,
+      });
+      scene.add(new THREE.Points(geo, mat));
+      starsAdded.current = true;
+    } catch {
+      /* starfield is best-effort */
+    }
+  }, [graphData]);
+
   // Responsive sizing.
   useEffect(() => {
     const el = wrapRef.current;
@@ -213,14 +249,14 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
   }, []);
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', background: '#0d0d12' }}>
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', background: '#000000' }}>
       {graphData.nodes.length > 0 && (
       <ForceGraph3D
         ref={fgRef}
         width={dims.width}
         height={dims.height}
         graphData={graphData}
-        backgroundColor="#0d0d12"
+        backgroundColor="#000000"
         showNavInfo={false}
         nodeLabel="name"
         nodeColor={nodeColor}
