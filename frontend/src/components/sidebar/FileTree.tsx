@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, Search, Sparkles } from 'lucide-react';
 import { api } from '../../lib/api';
 import { fixtureTree } from '../../lib/fixtures';
@@ -7,6 +7,8 @@ import type { TreeNode } from '../../lib/types';
 interface FileTreeProps {
   onFileSelect?: (path: string) => void;
   selectedPath?: string;
+  /** Doc IDs cited by the latest chat answer — highlighted + auto-revealed. */
+  highlightedPaths?: string[];
 }
 
 interface TreeNodeItemProps {
@@ -15,6 +17,7 @@ interface TreeNodeItemProps {
   selectedPath?: string;
   onSelect: (path: string) => void;
   filter: string;
+  highlighted: Set<string>;
 }
 
 function matchesFilter(node: TreeNode, filter: string): boolean {
@@ -25,13 +28,26 @@ function matchesFilter(node: TreeNode, filter: string): boolean {
   return false;
 }
 
-function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeItemProps) {
+function nodeContainsHighlight(node: TreeNode, set: Set<string>): boolean {
+  if (set.size === 0) return false;
+  if (node.type !== 'directory') return set.has(node.path);
+  return (node.children ?? []).some(c => nodeContainsHighlight(c, set));
+}
+
+function TreeNodeItem({ node, depth, selectedPath, onSelect, filter, highlighted }: TreeNodeItemProps) {
   const [expanded, setExpanded] = useState(depth < 1);
+  const containsCited = useMemo(() => nodeContainsHighlight(node, highlighted), [node, highlighted]);
+
+  // Auto-reveal folders that contain a cited document when a chat answer arrives.
+  useEffect(() => {
+    if (containsCited && node.type === 'directory') setExpanded(true);
+  }, [containsCited, node.type]);
 
   if (!matchesFilter(node, filter)) return null;
 
   const isDir = node.type === 'directory';
   const isSelected = selectedPath === node.path;
+  const isCited = !isDir && highlighted.has(node.path);
   const indent = depth * 14;
   // Documents rewritten by the AI live under the `curated/` namespace.
   const isAi = node.path === 'curated' || node.path.startsWith('curated/');
@@ -73,6 +89,12 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
           {node.path === 'curated' && (
             <Sparkles size={11} color="#c084fc" style={{ flexShrink: 0, marginLeft: 2 }} />
           )}
+          {containsCited && !expanded && (
+            <span
+              title="Contains a referenced document"
+              style={{ marginLeft: 'auto', width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', boxShadow: '0 0 6px rgba(245,158,11,0.8)', flexShrink: 0 }}
+            />
+          )}
         </button>
 
         {expanded && node.children && (
@@ -85,6 +107,7 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
                 selectedPath={selectedPath}
                 onSelect={onSelect}
                 filter={filter}
+                highlighted={highlighted}
               />
             ))}
           </div>
@@ -97,31 +120,40 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
     <button
       onClick={() => onSelect(node.path)}
       title={node.summary ? `${node.name} — ${node.summary}` : node.name}
+      className={isCited && !isSelected ? 'tree-cited' : undefined}
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 6,
         width: '100%',
         padding: `4px 10px 4px ${10 + indent}px`,
-        background: isSelected ? 'rgba(139,92,246,0.15)' : 'transparent',
-        border: isSelected ? '1px solid rgba(139,92,246,0.3)' : '1px solid transparent',
+        background: isSelected ? 'rgba(139,92,246,0.15)' : isCited ? 'rgba(245,158,11,0.13)' : 'transparent',
+        border: isSelected
+          ? '1px solid rgba(139,92,246,0.3)'
+          : isCited
+            ? '1px solid rgba(245,158,11,0.4)'
+            : '1px solid transparent',
         cursor: 'pointer',
-        color: isSelected ? '#c4b5fd' : '#94a3b8',
+        color: isSelected ? '#c4b5fd' : isCited ? '#fcd34d' : '#94a3b8',
         fontSize: 12,
         textAlign: 'left',
         borderRadius: 4,
         transition: 'all 0.15s',
         marginRight: 8,
-        boxShadow: isSelected ? '0 0 8px rgba(139,92,246,0.2)' : 'none',
+        boxShadow: isSelected
+          ? '0 0 8px rgba(139,92,246,0.2)'
+          : isCited
+            ? '0 0 10px rgba(245,158,11,0.25)'
+            : 'none',
       }}
       onMouseOver={e => {
-        if (!isSelected) {
+        if (!isSelected && !isCited) {
           (e.currentTarget as HTMLElement).style.background = 'rgba(139,92,246,0.08)';
           (e.currentTarget as HTMLElement).style.color = '#c4b5fd';
         }
       }}
       onMouseOut={e => {
-        if (!isSelected) {
+        if (!isSelected && !isCited) {
           (e.currentTarget as HTMLElement).style.background = 'transparent';
           (e.currentTarget as HTMLElement).style.color = '#94a3b8';
         }
@@ -130,14 +162,21 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
       {isAi ? (
         <Sparkles size={12} color={isSelected ? '#d8b4fe' : '#c084fc'} style={{ flexShrink: 0 }} />
       ) : (
-        <File size={12} color={isSelected ? '#a78bfa' : '#475569'} style={{ flexShrink: 0 }} />
+        <File size={12} color={isSelected ? '#a78bfa' : isCited ? '#f59e0b' : '#475569'} style={{ flexShrink: 0 }} />
       )}
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {node.name}
       </span>
+      {isCited && (
+        <span style={{
+          marginLeft: isAi ? 4 : 'auto', flexShrink: 0, fontSize: 8, fontWeight: 700,
+          color: '#fbbf24', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)',
+          borderRadius: 3, padding: '0 4px', letterSpacing: '0.05em',
+        }}>REF</span>
+      )}
       {isAi && (
         <span style={{
-          marginLeft: 'auto', fontSize: 8, fontWeight: 700, color: '#c084fc',
+          marginLeft: isCited ? 4 : 'auto', fontSize: 8, fontWeight: 700, color: '#c084fc',
           background: 'rgba(192,132,252,0.12)', border: '1px solid rgba(192,132,252,0.3)',
           borderRadius: 3, padding: '0 4px', letterSpacing: '0.05em', flexShrink: 0,
         }}>AI</span>
@@ -146,10 +185,11 @@ function TreeNodeItem({ node, depth, selectedPath, onSelect, filter }: TreeNodeI
   );
 }
 
-export function FileTree({ onFileSelect, selectedPath }: FileTreeProps) {
+export function FileTree({ onFileSelect, selectedPath, highlightedPaths }: FileTreeProps) {
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [filter, setFilter] = useState('');
   const [offline, setOffline] = useState(false);
+  const highlighted = useMemo(() => new Set(highlightedPaths ?? []), [highlightedPaths]);
 
   useEffect(() => {
     api.getTree()
@@ -232,6 +272,7 @@ export function FileTree({ onFileSelect, selectedPath }: FileTreeProps) {
               selectedPath={selectedPath}
               onSelect={path => onFileSelect?.(path)}
               filter={filter}
+              highlighted={highlighted}
             />
           ))
         )}

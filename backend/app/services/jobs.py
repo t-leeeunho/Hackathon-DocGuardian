@@ -53,8 +53,24 @@ def set_status(
         job["status"] = status
         if result is not None:
             job["result"] = result
+            # The Librarian may re-file the doc, so the real id is only known once
+            # the ingest finishes — keep the job's docId in sync with the result
+            # (accept either the camelCase DTO or the raw snake_case result).
+            doc_id = result.get("docId") or result.get("doc_id")
+            if doc_id:
+                job["docId"] = doc_id
         if error is not None:
             job["error"] = error
+        job["updatedAt"] = time.time()
+
+
+def set_progress(job_id: str, **fields: Any) -> None:
+    """Merge arbitrary progress fields (e.g. imported count, message) into a job."""
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        job.update(fields)
         job["updatedAt"] = time.time()
 
 

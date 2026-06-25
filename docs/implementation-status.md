@@ -15,12 +15,26 @@ slice**: ACL enforcement, the approval → apply → provenance → rollback flo
 duplicate/conflict detection, derived node health/importance, a `MetricsDTO`
 aggregation, a **real containerized verification sandbox** (Docker), and an
 **async ingest path** (`202 + jobId`) with a live `WS /stream` event feed. Document
-intake is **atomic** (all-or-nothing) and generates a one-line AI/extractive
-description shown in the sidebar tree. The **React frontend is scaffolded and
+intake is **atomic** (all-or-nothing) and now runs through the **Librarian**, which
+rewrites each drop-off into an **AI-agent-friendly** document and re-files it under
+an agent-chosen category folder; the rewrite is the canonical indexed/displayed
+content and the untouched original is preserved (`GET /original/{docId}`). The
+**React frontend is scaffolded and
 buildable** (typecheck + tests + production build all green); it consumes the API,
 live-refreshes over the WebSocket, and falls back to demo fixtures when offline.
 
-Remaining work: wiring the frontend governance panels (approve/reject, metrics,
+The backend now also includes an **Insights / analysis slice** (`app/analysis/`):
+deterministic doc-quality (readability / completeness / structure / placeholders),
+broken-link + orphan/dead-end detection (closing the README broken-link gap),
+pure-Python **PageRank centrality**, drift / at-risk ranking, and corpus **trends**
+backed by a persisted `analysis_snapshots` table — exposed via `/analysis*`,
+overlaid on the graph nodes, and snapshotted on ingest / approve / rollback. An
+**opt-in LLM** layer adds semantic notes (`?llm=true`) and degrades to deterministic
+when Azure is absent (≤1 call). The frontend adds an **Insights drawer** (per-doc
+analysis + a trends dashboard with inline-SVG charts), graph node badges, and a
+live (no longer fixture-only) metrics strip.
+
+Remaining work: wiring the remaining frontend governance panels (approve/reject,
 provenance) to the live endpoints, `POST /ingest/refresh`, demo seed data, and
 backend lint/format tooling. The sandbox runs real containers when Docker is
 present and otherwise reports `available:false` (never a fake pass).
@@ -59,11 +73,13 @@ backend/
 │   ├── config.py               # env loading + repos.config loader
 │   ├── models.py               # CORE contracts (snake_case): RawDocument, DocChunk, GraphEdge, EdgeType
 │   ├── main.py                 # FastAPI app — ALL endpoints + camelCase API DTOs
+│   ├── mcp_server.py           # MCP server (stdio) exposing ask_docs/search_docs/... to Copilot CLI
 │   ├── tree.py                 # build_tree() for the left-sidebar file tree
 │   ├── agents/
 │   │   ├── graph.py            # LangGraph chat + propose graphs; no-evidence short-circuit + evidence gate; reasoning trace
+│   │   ├── librarian.py        # AI-native rewrite + placement for drop-offs (LLM + deterministic fallback)
 │   │   ├── llm.py              # Chat factory: CHAT_PROVIDER azure|fake (get_chat_llm) + FakeChatLLM + AzureNotConfiguredError
-│   │   └── schemas.py          # Citation/Evidence/ProposalDiff/Verification, ChatAnswer (+reasoning), CuratorDraft, GuardianReview, AgentProposal
+│   │   └── schemas.py          # Citation/Evidence/ProposalDiff/Verification, ChatAnswer (+reasoning), CuratorDraft, GuardianReview, LibrarianPlan, AgentProposal
 │   ├── governance/            # GOVERNANCE SLICE
 │   │   ├── acl.py             # Principal + can_access/can_write (pure, fail-closed)
 │   │   ├── health.py          # derive_health / derive_importance (pure)
@@ -79,14 +95,24 @@ backend/
 │   │   └── provider.py         # EmbeddingProvider ABC + Local (fastembed) + Azure
 │   ├── ingestion/
 │   │   ├── git_ingest.py       # sparse/shallow clone + commit metadata -> RawDocument
-│   │   └── intake.py           # user drop-off -> atomic ingest (txn) + AI summary
+│   │   ├── intake.py           # user drop-off -> atomic ingest (txn) + Librarian rewrite
+│   │   └── web_ingest.py       # crawl a URL + sub-pages -> markdown -> Librarian ingest
+│   ├── analysis/              # INSIGHTS SLICE (deterministic-first analyzers)
+│   │   ├── signals.py         # DocAnalysisSignals/CorpusSignals + DB gather helpers
+│   │   ├── quality.py         # readability/completeness/structure/placeholders -> DocQuality
+│   │   ├── links.py           # broken-link + orphan/dead-end detection -> DocLinks
+│   │   ├── graph_structure.py # pure-Python PageRank centrality + coverage gaps
+│   │   ├── drift.py           # doc age/churn + risk ranking -> DocDrift
+│   │   ├── trends.py          # time-series + acceptance/confidence/evidence -> TrendsDTO
+│   │   ├── report.py          # per-doc DocAnalysis + corpus AnalysisReport assembly
+│   │   └── llm.py             # opt-in LLM notes (<=1 call; degrades to deterministic)
 │   ├── processing/
 │   │   ├── processor.py        # heading-aware chunk_document() + extract_edges()
 │   │   ├── conflicts.py        # duplicate/conflict edge detection (≥0.92 / ≥0.85)
 │   │   └── summarize.py        # one-line doc description (AI + extractive fallback)
 │   └── storage/
-│       ├── db.py               # Postgres+pgvector + init_schema() (+governance tables)
-│       ├── queries.py          # list_doc_ids, get_document, get_graph, get_doc_summaries
+│       ├── db.py               # Postgres+pgvector + init_schema() (+governance +analysis_snapshots)
+│       ├── queries.py          # list_doc_ids, get_document, get_graph, get/insert_analysis_snapshot
 │       └── vectorstore.py      # upserts (optional shared conn) + cosine search
 └── scripts/
     ├── run_ingest.py           # ingest -> process -> JSONL under data/_processed/
@@ -117,14 +143,14 @@ frontend/
 │   │   ├── types.ts                 # mirrors README §8B (GraphDTO, ChatAnswer, …)
 │   │   ├── api.ts                   # fetch client; snake→camel for /chat,/propose
 │   │   └── fixtures.ts              # demo/offline data (planted stale/dup/conflict)
-│   ├── hooks/                       # useChat, useGraph, useHighlight, useReducedMotion
+│   ├── hooks/                       # useChat/useGraph/useHighlight/useReducedMotion + useAnalysis/useTrends/useMetrics
 │   ├── components/
 │   │   ├── AppShell.tsx             # 3-pane layout + header/metrics strip
 │   │   ├── graph/                   # DocGraph (React Flow), DocNode, SparkleBackground
 │   │   ├── chat/                    # ChatPanel, CitationChip, ScopeToggle
 │   │   ├── sidebar/                 # FileTree
 │   │   ├── intake/                  # DropOffArea (drop-off intake)
-│   │   └── panels/                  # ProposalPanel (Monaco diff), Provenance, Metrics
+│   │   └── panels/                  # ProposalPanel (Monaco diff), Provenance, Metrics, AnalysisPanel, TrendsPanel
 │   └── test/                        # App.test.tsx (vitest) + setup.ts
 ```
 
@@ -145,11 +171,13 @@ Base URL (local): `http://localhost:8000`. CORS allows the Vite dev server
 | --- | --- | --- | --- |
 | `GET` | `/health` | Liveness + embedding provider/dim | `{status, embeddingProvider, dim}` |
 | `GET` | `/search?q=&repo=&k=` | Semantic search (LangChain retriever target) | pgvector cosine; `matches[]` camelCase |
-| `POST` | `/documents` | Drop-off intake (upload/paste) | atomic; text only; `415` binary; `?background=true` → `202`+job |
+| `POST` | `/documents` | Drop-off intake (upload/paste) | **Librarian rewrites + re-files**; atomic; text only; `415` binary; `?background=true` → `202`+job |
+| `POST` | `/ingest/url` | Crawl a website URL + sub-pages and import | `202`+job; Librarian per page; grouped under host-derived namespace |
 | `GET` | `/jobs/{jobId}` | Async ingest job status | `{jobId,docId,status,result,error}` |
 | `GET` | `/tree?namespace=` | File-system tree (left sidebar) | nested `{name,type,path,summary?,children?}` |
-| `GET` | `/graph?repo=` | Document graph (nodes + edges) | **real** derived health/importance; ACL-filtered |
-| `GET` | `/documents/{docId}` | Single document + its chunks | camelCase |
+| `GET` | `/graph?repo=` | Document graph (nodes + edges) | **real** health/importance + analysis overlay (centrality/quality/orphan/brokenLinks); ACL-filtered |
+| `GET` | `/documents/{docId}` | Single document + its chunks (AI rewrite) | camelCase; `aiRewritten`/`originalPath`/`rationale` |
+| `GET` | `/original/{docId}` | Original drop-off vs. the AI rewrite | camelCase; `originalContent`/`aiContent` |
 | `GET` | `/provenance/{docId}` | Append-only audit history | camelCase `ProvenanceEntry[]` |
 | `POST` | `/chat` | Curator agent — evidence-backed answer | LangGraph; **503** if Azure not configured |
 | `POST` | `/propose` | Curator + Guardian — proposed change | LangGraph; persisted to `proposals`; **503** if no Azure |
@@ -157,6 +185,10 @@ Base URL (local): `http://localhost:8000`. CORS allows the Vite dev server
 | `POST` | `/proposals/{id}/approve` | Approve + apply (writes provenance) | `202` if staged-approval required |
 | `POST` | `/proposals/{id}/rollback` | Roll back an applied proposal | append-only new provenance entry |
 | `GET` | `/metrics` | Governance dashboard counters | `MetricsDTO` (camelCase) |
+| `GET` | `/analysis?repo=` | Corpus quality/links/drift/centrality report | `AnalysisReport` (camelCase) |
+| `GET` | `/analysis/trends?repo=` | Trends time-series + acceptance/confidence/evidence | `TrendsDTO`; registered before the catch-all |
+| `GET` | `/analysis/{docId}?llm=` | Per-doc analysis; `?llm=true` adds opt-in LLM notes | `DocAnalysis`; ACL-checked (404 on denial) |
+| `POST` | `/analysis/snapshot` | Capture a trends snapshot | inserts `analysis_snapshots`; emits `analysis`+`metrics` |
 | `POST` | `/verify` | Run a command in the Docker sandbox | real container; `available:false` if no Docker |
 | `WS` | `/stream` | Live event feed (ingest/graph/metrics/proposal) | small typed envelopes + heartbeat |
 
@@ -258,12 +290,17 @@ chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
   HNSW cosine index; upserts use `ON CONFLICT` for idempotency and accept an
   optional shared connection so a whole ingest can be one transaction; search is
   `1 - (embedding <=> q)` with optional `doc_id` prefix filter by `shortName`.
-- **Drop-off intake** (`ingestion/intake.py`): **atomic** — summary + embed +
+- **Drop-off intake** (`ingestion/intake.py`): **atomic** — rewrite + summary + embed +
   doc/edges/chunks + incremental conflict detection commit together or roll back
-  entirely (no "ghost" docs). Generates a one-line description (AI via the chat
-  model when configured, else extractive first paragraph). Available synchronously
-  (`201`) or async (`?background=true` → `202` + a job tracked in `services/jobs.py`,
-  with `ingest`/`graph` events on `WS /stream`).
+  entirely (no "ghost" docs). The **Librarian** (`agents/librarian.py`) first rewrites
+  the raw content into an AI-agent-friendly document (front-matter, summary callout,
+  normalized structure) and chooses a category folder / slug placement; that rewrite is
+  the canonical content (chunked, embedded, indexed, shown by default) while the
+  untouched original + the chosen `rationale` are stored on the `documents` row. The
+  rewrite uses the chat model when configured and **degrades to a deterministic local
+  rewrite/placement** on any error, so ingestion never blocks on the LLM. Available
+  synchronously (`201`) or async (`?background=true` → `202` + a job tracked in
+  `services/jobs.py`, with `ingest`/`graph` events on `WS /stream`).
 - **Conflict detection** (`processing/conflicts.py`): cross-document chunk cosine
   ≥ 0.92 → `duplicate-of`, ≥ 0.85 → `conflicts-with`; best edge per unordered pair
   with stable ids. Runs as a batch (`scripts/detect_conflicts.py`) or incrementally
@@ -286,7 +323,7 @@ chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
 | Local + Azure embeddings (provider-abstracted) | ✅ Implemented |
 | Postgres + pgvector store + cosine search | ✅ Implemented |
 | Drop-off intake (`/documents`) | ✅ Implemented (text only) |
-| Tree, graph, single-document endpoints | ✅ Implemented (graph health/size/accessible are placeholders) |
+| Tree, graph, single-document endpoints | ✅ Implemented (graph nodes now carry real health/centrality + analysis overlay) |
 | LangGraph Curator (`/chat`) + Curator→Guardian (`/propose`) | ✅ Implemented (Azure default; `CHAT_PROVIDER=fake` offline) |
 | Richer `AgentProposal` (`proposalId`/`sourceDocIds`/`diff`/`evidence`/`verification`) | ✅ Implemented (`verification` null until sandbox runs) |
 | Offline fake chat provider (`CHAT_PROVIDER=fake`) + no-evidence short-circuit + evidence gate | ✅ Implemented |
@@ -294,15 +331,24 @@ chat agents (Azure by default, the offline fake via `CHAT_PROVIDER=fake`, or
 | **Duplicate/conflict detection** (score ≥ 0.92 / ≥ 0.85 edges) | ✅ Implemented (batch + incremental on intake) |
 | **Node health / freshness scoring** | ✅ Implemented (`derive_health`/`derive_importance`) |
 | **Governance: ACL, approval flow, provenance, rollback** | ✅ Implemented (mocked `Principal`; append-only audit) |
-| **Metrics dashboard + `/metrics`** | ✅ Backend implemented (`MetricsDTO`); UI panel still on fixtures |
+| **Metrics dashboard + `/metrics`** | ✅ Backend implemented (`MetricsDTO`); UI panel now live (fixtures fallback offline) |
+| **Insights: doc-quality analyzers (readability/completeness/structure/placeholders)** | ✅ Implemented (pure; `app/analysis/quality.py`) |
+| **Insights: broken-link + orphan/dead-end detection** | ✅ Implemented (`app/analysis/links.py`) — closes the README broken-link gap |
+| **Insights: PageRank centrality + drift/at-risk ranking** | ✅ Implemented (`graph_structure.py`/`drift.py`; graph nodes carry real centrality) |
+| **Insights: trends + `analysis_snapshots` + `/analysis/trends`** | ✅ Implemented (series, acceptance/confidence/evidence; snapshots on ingest/approve/rollback) |
+| **Insights: `/analysis`, `/analysis/{docId}` (+opt-in `?llm`), `/analysis/snapshot`** | ✅ Implemented (ACL-checked; `DocAnalysis`/`AnalysisReport` DTOs) |
+| **Insights frontend (graph badges, AnalysisPanel, TrendsPanel)** | ✅ Implemented (Insights drawer; fixtures fallback offline) |
 | **Verification sandbox** | ✅ Real Docker; `available:false` without Docker |
 | **WebSocket `/stream` + async ingest (`202`+job)** | ✅ Implemented; **`/ingest/refresh`** still pending |
 | **Atomic intake + AI/extractive doc summary** | ✅ Implemented (single txn; sidebar tooltip) |
+| **Librarian: AI-native rewrite + re-placement of drop-offs** | ✅ Implemented (LLM + deterministic fallback; original preserved via `/original`) |
+| **MCP server (Copilot CLI / IDE integration)** | ✅ Implemented (`app/mcp_server.py`; stdio; `ask_docs`/`search_docs`/`get_document`/`list_sources` proxy the API) |
+| **Website URL ingestion (crawl + import)** | ✅ Implemented (`app/ingestion/web_ingest.py`; `POST /ingest/url`; bounded same-site crawl → Librarian per page) |
 | **Frontend shell + graph/chat/intake/provenance/diff UI** | 🟡 Scaffolded (builds; live WS refresh; demo-mode fixtures) |
 | **Frontend data layer (`src/lib/types.ts`, `api.ts`, `fixtures.ts`)** | ✅ Implemented (camelCase API mirror + snake→camel client) |
 | **Frontend gates: `npm run lint` (tsc), `npm run test`, `npm run build`** | ✅ Green (8 vitest tests pass) |
 | **Frontend governance panels wired to live endpoints** | ❌ Pending (metrics/approve render from fixtures) |
-| **Backend tests (pytest)** | ✅ 29 pure-logic tests; ruff/black still not configured |
+| **Backend tests (pytest)** | ✅ 408 tests (pure analyzers + API); ruff/black still not configured |
 
 ---
 
@@ -318,7 +364,7 @@ python -m scripts.run_ingest --all                 # clone -> chunk -> JSONL
 python -m scripts.load_vectors --all               # embed + load into pgvector
 python -m scripts.detect_conflicts --all           # duplicate/conflict edges
 python -m scripts.search "how do I build garnet"   # sanity-check retrieval
-python -m pytest tests -q                          # 29 pure-logic tests
+python -m pytest tests -q                          # 96 pure-logic tests
 
 # API:
 uvicorn app.main:app --reload --port 8000          # Swagger at /docs

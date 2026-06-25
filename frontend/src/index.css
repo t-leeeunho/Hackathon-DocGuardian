@@ -154,6 +154,10 @@ body {
   to { stroke-dashoffset: 0; }
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes shimmer {
   0% { background-position: -200% center; }
   100% { background-position: 200% center; }
@@ -328,6 +332,64 @@ body {
   font-weight: 600;
   margin-top: 1em;
   margin-bottom: 0.5em;
+}
+
+/* Full-document rendering (DocumentViewer) — readable headings + spacing */
+.doc-md { font-size: 13px; line-height: 1.65; color: var(--text-primary); }
+.doc-md h1 { font-size: 19px; border-bottom: 1px solid rgba(139,92,246,0.18); padding-bottom: 6px; }
+.doc-md h2 { font-size: 16px; }
+.doc-md h3 { font-size: 14px; }
+.doc-md h4, .doc-md h5, .doc-md h6 { font-size: 13px; color: #cbd5e1; margin: 0.8em 0 0.4em; }
+.doc-md p { margin: 0.6em 0; }
+.doc-md > :first-child { margin-top: 0; }
+.doc-md blockquote {
+  margin: 0.8em 0;
+  padding: 6px 12px;
+  border-left: 3px solid rgba(139,92,246,0.45);
+  background: rgba(139,92,246,0.06);
+  border-radius: 0 6px 6px 0;
+  color: #b4c0d3;
+}
+.doc-md hr { border: none; border-top: 1px solid rgba(139,92,246,0.15); margin: 1em 0; }
+.doc-md table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 12px; }
+.doc-md th, .doc-md td { border: 1px solid rgba(139,92,246,0.18); padding: 5px 9px; text-align: left; }
+.doc-md th { background: rgba(139,92,246,0.1); color: #cbd5e1; }
+.doc-md img { max-width: 100%; border-radius: 6px; }
+
+/* Cited (chat-referenced) file in the sidebar tree */
+@keyframes citedPulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(245, 158, 11, 0.2); }
+  50% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.45); }
+}
+.tree-cited { animation: citedPulse 2s ease-in-out infinite; }
+
+/* Drag-to-resize handle between panels */
+.resize-handle {
+  width: 6px;
+  flex-shrink: 0;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+  z-index: 12;
+  background: transparent;
+  touch-action: none;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(139, 92, 246, 0.18);
+  transition: background 0.15s, width 0.15s, box-shadow 0.15s;
+}
+.resize-handle:hover::after,
+.resize-handle:active::after {
+  width: 2px;
+  background: rgba(139, 92, 246, 0.75);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
 }
 
 /* Reduced motion overrides */
