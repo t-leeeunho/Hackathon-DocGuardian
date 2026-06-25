@@ -4,6 +4,8 @@ import { Send, AlertTriangle, MessageSquare, Zap, Sparkles, Brain, BookText } fr
 import { ReferenceCard } from './ReferenceCard';
 import { ScopeToggle } from './ScopeToggle';
 import { useChat } from '../../hooks/useChat';
+import { useDemo } from '../../hooks/useDemo';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 import type { GraphHighlightEvent, Citation, ChatAnswer } from '../../lib/types';
 
 interface ChatPanelProps {
@@ -72,6 +74,36 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Guided demo: when a chat beat fires, type the question out then auto-send.
+  const demo = useDemo();
+  const reduce = useReducedMotion();
+  const sendRef = useRef(sendMessage);
+  sendRef.current = sendMessage;
+  const lastDemoNonce = useRef(0);
+
+  useEffect(() => {
+    const cmd = demo.chatCommand;
+    if (!demo.active || !cmd || cmd.nonce === lastDemoNonce.current) return;
+    lastDemoNonce.current = cmd.nonce;
+    const text = cmd.text;
+    setInput('');
+    if (reduce) {
+      setInput(text);
+      const t = window.setTimeout(() => { setInput(''); sendRef.current(text); }, 300);
+      return () => window.clearTimeout(t);
+    }
+    let i = 0;
+    const typer = window.setInterval(() => {
+      i += 1;
+      setInput(text.slice(0, i));
+      if (i >= text.length) {
+        window.clearInterval(typer);
+        window.setTimeout(() => { setInput(''); sendRef.current(text); }, 380);
+      }
+    }, 42);
+    return () => window.clearInterval(typer);
+  }, [demo.chatCommand, demo.active, reduce]);
 
   const handleSend = () => {
     const q = input.trim();

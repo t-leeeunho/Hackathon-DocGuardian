@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { fixtureGraph, fixtureChatAnswer, fixtureProposal, fixtureMetrics } from '../lib/fixtures';
 import { fixtureAnalysisReport, fixtureTrends, fixtureDocAnalysis } from '../lib/fixtures';
+import { demoScript } from '../lib/demoScript';
 
 describe('fixtures', () => {
   it('fixture graph has nodes and edges', () => {
@@ -97,6 +98,44 @@ describe('insights fixtures (Analysis subsystem)', () => {
       expect(a.centrality).toBeGreaterThanOrEqual(0);
       // LLM notes are opt-in (fetched on demand), so the offline fixtures omit them.
       expect(a.llm ?? null).toBeNull();
+    }
+  });
+});
+
+describe('guided demo script', () => {
+  const nodeIds = new Set(fixtureGraph.nodes.map((n) => n.id));
+
+  it('has beats, each with a caption and an action', () => {
+    expect(demoScript.length).toBeGreaterThan(0);
+    for (const beat of demoScript) {
+      expect(beat.id).toBeTruthy();
+      expect(beat.caption.length).toBeGreaterThan(0);
+      expect(beat.action.kind).toBeTruthy();
+    }
+  });
+
+  it('has unique beat ids', () => {
+    const ids = demoScript.map((b) => b.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('references only real fixture documents (no typos that would break the live run)', () => {
+    for (const beat of demoScript) {
+      const a = beat.action;
+      if (a.kind === 'selectDoc') expect(nodeIds.has(a.docId)).toBe(true);
+      if (a.kind === 'propose' && a.docId) expect(nodeIds.has(a.docId)).toBe(true);
+      if (a.kind === 'highlight') for (const id of a.nodeIds) expect(nodeIds.has(id)).toBe(true);
+      if (a.kind === 'chat') expect(a.text.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('approves exactly once and bumps the metrics', () => {
+    const approvals = demoScript.filter((b) => b.action.kind === 'approve');
+    expect(approvals.length).toBe(1);
+    const a = approvals[0].action;
+    if (a.kind === 'approve') {
+      expect(a.metricsDelta).toBeDefined();
+      expect(Object.keys(a.metricsDelta ?? {}).length).toBeGreaterThan(0);
     }
   });
 });

@@ -1,5 +1,10 @@
 import { AppShell } from './components/AppShell';
+import { DemoProvider } from './hooks/useDemo';
 
 export default function App() {
-  return <AppShell />;
+  return (
+    <DemoProvider>
+      <AppShell />
+    </DemoProvider>
+  );
 }
