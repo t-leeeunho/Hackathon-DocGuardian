@@ -3,6 +3,18 @@ import { Upload, FileText, Zap, X, CheckCircle, AlertTriangle, Sparkles, FolderT
 import { api, ApiError } from '../../lib/api';
 import type { DocumentIntakeResponse, UrlIngestResult } from '../../lib/types';
 
+type QueuedDoc = {
+  filename: string;
+  content: string;
+};
+
+type BatchSummary = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  failures: string[];
+};
+
 interface DropOffAreaProps {
   onIngested?: (docId: string) => void;
 }
@@ -56,6 +68,8 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [result, setResult] = useState<DocumentIntakeResponse | null>(null);
+  const [queuedDocs, setQueuedDocs] = useState<QueuedDoc[]>([]);
+  const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
   const [urlResult, setUrlResult] = useState<UrlIngestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -65,31 +79,111 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
     setFilename('');
     setUrl('');
     setResult(null);
+    setQueuedDocs([]);
+    setBatchSummary(null);
     setUrlResult(null);
     setProgress(null);
     setError(null);
   };
 
+  const isSupportedTextFile = (file: File) => {
+    const name = file.name.toLowerCase();
+    return file.type.startsWith('text/') || name.endsWith('.md') || name.endsWith('.txt');
+  };
+
+  const readDocsFromFiles = async (files: File[]): Promise<QueuedDoc[]> => {
+    const supported = files.filter((f) => isSupportedTextFile(f));
+    const docs = await Promise.all(
+      supported.map(async (file) => {
+        const withPath = file as File & { webkitRelativePath?: string };
+        const relPath = withPath.webkitRelativePath?.trim();
+        const filenameWithPath = relPath && relPath.length > 0 ? relPath : file.name;
+        const content = await file.text();
+        return { filename: filenameWithPath, content };
+      }),
+    );
+    return docs.filter((d) => d.content.trim().length > 0);
+  };
+
+  const uploadFolder = () => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.multiple = true;
+    picker.accept = '.md,.txt,text/*';
+    (picker as HTMLInputElement & { webkitdirectory?: boolean }).webkitdirectory = true;
+    picker.onchange = async () => {
+      const files = Array.from(picker.files ?? []);
+      if (!files.length) return;
+      setError(null);
+      setResult(null);
+      setBatchSummary(null);
+      try {
+        const docs = await readDocsFromFiles(files);
+        if (!docs.length) {
+          setQueuedDocs([]);
+          setError('No supported text or markdown files found in that folder.');
+          return;
+        }
+        setText('');
+        setFilename('');
+        setQueuedDocs(docs);
+      } catch {
+        setError('Failed to read folder files.');
+      }
+    };
+    picker.click();
+  };
+
+  const ingestAsyncJob = async (docContent: string, docFilename?: string) => {
+    const job = await api.ingestDocumentAsync(docContent, docFilename || undefined);
+    let current = job;
+    while (current.status === 'queued' || current.status === 'processing') {
+      await new Promise((r) => setTimeout(r, 800));
+      current = await api.getJob(job.jobId);
+    }
+    if (current.status === 'succeeded' && current.result) {
+      return current.result as DocumentIntakeResponse;
+    }
+    throw new Error(current.error || 'Ingestion failed and was rolled back.');
+  };
+
   const submit = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() && queuedDocs.length === 0) return;
     setSubmitting(true);
     setError(null);
     setResult(null);
+    setBatchSummary(null);
     try {
-      // Async: return immediately with a job, then poll until terminal so the
-      // user is never blocked on the embed + summarize + conflict pipeline.
-      const job = await api.ingestDocumentAsync(text, filename || undefined);
-      let current = job;
-      while (current.status === 'queued' || current.status === 'processing') {
-        await new Promise((r) => setTimeout(r, 800));
-        current = await api.getJob(job.jobId);
-      }
-      if (current.status === 'succeeded' && current.result) {
-        const res = current.result as DocumentIntakeResponse;
+      if (queuedDocs.length > 0) {
+        const failures: string[] = [];
+        const total = queuedDocs.length;
+        let succeeded = 0;
+        let firstDocId: string | null = null;
+
+        for (let i = 0; i < queuedDocs.length; i += 1) {
+          const doc = queuedDocs[i];
+          setProgress(`Ingesting ${i + 1}/${total}: ${doc.filename}`);
+          try {
+            const res = await ingestAsyncJob(doc.content, doc.filename);
+            succeeded += 1;
+            if (!firstDocId) firstDocId = res.docId;
+            setResult(res);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : 'Failed to ingest document.';
+            failures.push(`${doc.filename}: ${msg}`);
+          }
+        }
+
+        const failed = total - succeeded;
+        setBatchSummary({ total, succeeded, failed, failures });
+        if (failed === total) {
+          setError('Folder ingest failed. See failures below.');
+        }
+        if (firstDocId) onIngested?.(firstDocId);
+      } else {
+        const res = await ingestAsyncJob(text, filename || undefined);
         setResult(res);
         onIngested?.(res.docId);
-      } else {
-        setError(current.error || 'Ingestion failed and was rolled back.');
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 415) {
@@ -101,6 +195,7 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
       }
     } finally {
       setSubmitting(false);
+      setProgress(null);
     }
   };
 
@@ -144,19 +239,44 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    if (!file.type.startsWith('text/') && !file.name.endsWith('.md') && !file.name.endsWith('.txt')) {
-      setError('Only text and markdown files are supported.');
+    const dropped = Array.from(e.dataTransfer.files ?? []);
+    if (!dropped.length) return;
+
+    setError(null);
+    setResult(null);
+    setBatchSummary(null);
+
+    if (dropped.length === 1 && !((dropped[0] as File & { webkitRelativePath?: string }).webkitRelativePath)) {
+      const file = dropped[0];
+      if (!isSupportedTextFile(file)) {
+        setError('Only text and markdown files are supported.');
+        return;
+      }
+      setQueuedDocs([]);
+      setFilename(file.name);
+      file.text().then(setText).catch(() => setError('Failed to read file.'));
       return;
     }
-    setFilename(file.name);
-    file.text().then(setText).catch(() => setError('Failed to read file.'));
+
+    readDocsFromFiles(dropped)
+      .then((docs) => {
+        if (!docs.length) {
+          setQueuedDocs([]);
+          setError('No supported text or markdown files found in the dropped folder/files.');
+          return;
+        }
+        setText('');
+        setFilename('');
+        setQueuedDocs(docs);
+      })
+      .catch(() => setError('Failed to read dropped folder/files.'));
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setQueuedDocs([]);
+    setBatchSummary(null);
     setFilename(file.name);
     file.text().then(setText).catch(() => setError('Failed to read file.'));
   };
@@ -203,7 +323,9 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
         right: 0,
         top: 0,
         bottom: 0,
-        width: 440,
+        width: 'min(620px, 100vw)',
+        maxWidth: '100vw',
+        height: '100vh',
         zIndex: 50,
         display: 'flex',
         flexDirection: 'column',
@@ -278,9 +400,9 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
         >
           <FileText size={28} color="#6b7280" style={{ margin: '0 auto 8px' }} />
           <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 4 }}>
-            Drag & drop a file or <span style={{ color: '#a78bfa', textDecoration: 'underline' }}>click to browse</span>
+            Drag & drop files/folders or <span style={{ color: '#a78bfa', textDecoration: 'underline' }}>click to browse</span>
           </div>
-          <div style={{ fontSize: 11, color: '#4b5563' }}>Markdown and plain text only</div>
+          <div style={{ fontSize: 11, color: '#4b5563' }}>Markdown and plain text only. Folders supported.</div>
           <input
             ref={fileRef}
             type="file"
@@ -289,6 +411,45 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
             onChange={handleFileInput}
           />
         </div>
+
+        <button
+          onClick={uploadFolder}
+          style={{
+            width: '100%',
+            padding: '8px 10px',
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+            background: 'rgba(59,130,246,0.1)',
+            border: '1px solid rgba(59,130,246,0.25)',
+            color: '#93c5fd',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}
+        >
+          <FolderTree size={13} /> Upload Folder
+        </button>
+
+        {queuedDocs.length > 0 && (
+          <div style={{ padding: '10px 12px', borderRadius: 8, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 12, color: '#bfdbfe', fontWeight: 600 }}>
+              {queuedDocs.length} file{queuedDocs.length !== 1 ? 's' : ''} queued from folder
+            </div>
+            <div style={{ maxHeight: 100, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {queuedDocs.slice(0, 8).map((doc) => (
+                <div key={doc.filename} style={{ fontSize: 11, color: '#93c5fd', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {doc.filename}
+                </div>
+              ))}
+              {queuedDocs.length > 8 && (
+                <div style={{ fontSize: 10, color: '#60a5fa' }}>+{queuedDocs.length - 8} more</div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Filename */}
         <div>
@@ -511,6 +672,34 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
           </div>
         )}
 
+        {mode === 'doc' && batchSummary && (
+          <div style={{
+            padding: '12px 14px',
+            background: batchSummary.failed > 0 ? 'rgba(245,158,11,0.08)' : 'rgba(34,211,160,0.08)',
+            border: `1px solid ${batchSummary.failed > 0 ? 'rgba(245,158,11,0.25)' : 'rgba(34,211,160,0.2)'}`,
+            borderRadius: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: batchSummary.failed > 0 ? '#fcd34d' : '#34d399', fontSize: 13, fontWeight: 600 }}>
+              {batchSummary.failed > 0 ? <AlertTriangle size={16} /> : <CheckCircle size={16} />}
+              Folder ingest complete
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8' }}>
+              {batchSummary.succeeded}/{batchSummary.total} succeeded
+              {batchSummary.failed > 0 ? ` · ${batchSummary.failed} failed` : ''}
+            </div>
+            {batchSummary.failures.length > 0 && (
+              <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {batchSummary.failures.map((failure) => (
+                  <div key={failure} style={{ fontSize: 10, color: '#fca5a5', fontFamily: 'monospace' }}>{failure}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={{
@@ -530,7 +719,7 @@ export function DropOffArea({ onIngested }: DropOffAreaProps) {
       {/* Footer */}
       <div style={{ padding: '10px 16px', borderTop: '1px solid rgba(139,92,246,0.1)', flexShrink: 0 }}>
         {(() => {
-          const canSubmit = mode === 'url' ? Boolean(url.trim()) : Boolean(text.trim());
+          const canSubmit = mode === 'url' ? Boolean(url.trim()) : Boolean(text.trim()) || queuedDocs.length > 0;
           const active = canSubmit && !submitting;
           return (
             <button
