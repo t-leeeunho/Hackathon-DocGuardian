@@ -382,6 +382,11 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     [onNodeClick],
   );
 
+  // Return to the default fitted view after zooming/orbiting into a cluster.
+  const handleResetView = useCallback(() => {
+    fgRef.current?.zoomToFit?.(700, 140);
+  }, []);
+
   return (
     <div ref={wrapRef} style={{ position: 'relative', width: '100%', height: '100%', background: '#000000' }}>
       {graphData.nodes.length > 0 && (
@@ -406,6 +411,25 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         onEngineStop={handleEngineStop}
         onNodeClick={handleClick}
       />
+      )}
+
+      {/* reset view */}
+      {graphData.nodes.length > 0 && (
+        <button
+          type="button"
+          onClick={handleResetView}
+          title="Reset to default view"
+          style={{
+            position: 'absolute', top: 16, right: 16, zIndex: 6,
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+            borderRadius: 8, cursor: 'pointer',
+            background: 'rgba(18,18,26,0.7)', border: '1px solid rgba(139,92,246,0.18)',
+            color: '#cbd5e1', fontSize: 12, fontFamily: 'Inter, system-ui',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          Reset view
+        </button>
       )}
 
       {/* legend */}
