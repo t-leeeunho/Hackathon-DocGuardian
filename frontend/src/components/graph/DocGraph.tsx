@@ -18,6 +18,7 @@ interface FGNode {
   name: string;
   val: number;
   color: string;
+  health: string;
   repo: string;
   accessible: boolean;
   /** Insights overlay fields (additive, optional). */
@@ -42,11 +43,14 @@ const REPO_PALETTE = [
   '#34d399', '#fbbf24', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9',
 ];
 const HIGHLIGHT_COLOR = '#ffffff';
-// Every normal doc is a calm grey that stays *below* the bloom threshold, so it
-// doesn't glow. Conflicts are shown as red *edges* between docs (a field of red
-// nodes looked unpleasant). Only a cited/searched node turns bright white and
-// blooms — that's the "shine" when a question references it.
-const GENERIC_COLOR = '#94a3b8';
+// Node colors derived from document health status so the graph immediately
+// communicates which docs need attention.
+const HEALTH_COLOR: Record<string, string> = {
+  green: '#34d399',   // healthy
+  yellow: '#fbbf24',  // stale / needs attention
+  red: '#f87171',     // conflicting / critical
+  gray: '#94a3b8',    // unknown / unverified
+};
 
 const LINK_COLOR: Record<string, string> = {
   'conflicts-with': '#ef4444',
@@ -155,9 +159,9 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
       return {
         id: n.id,
         name: `${n.label}  ·  ${n.repo}`,
-        // Insights: scale by real PageRank centrality when present, else size.
-        val: 1 + Math.max(0, Math.min(1, n.centrality ?? n.size)) * 3.5,
-        color: GENERIC_COLOR,
+        val: 1 + Math.max(0, Math.min(1, n.size)) * 3.5,
+        color: HEALTH_COLOR[n.health] ?? HEALTH_COLOR.gray,
+        health: n.health,
         repo: n.repo,
         accessible: n.accessible,
         qualityScore: n.qualityScore,
@@ -202,13 +206,22 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
   }, [dims, graphData]);
 
   // The layout is frozen (no ticks), so fit the camera exactly once on load.
+  // We use both a timeout fallback and onEngineStop (passed to ForceGraph3D) to
+  // ensure zoomToFit fires even when physics ends before React's effect runs.
   const fittedRef = useRef(false);
-  useEffect(() => {
+  const handleEngineStop = useCallback(() => {
     if (fittedRef.current || graphData.nodes.length === 0) return;
+    fgRef.current?.zoomToFit?.(700, 140);
+    fittedRef.current = true;
+  }, [graphData.nodes.length]);
+  useEffect(() => {
+    // Reset so a new dataset gets its own zoomToFit.
+    fittedRef.current = false;
+    if (graphData.nodes.length === 0) return;
     const t = setTimeout(() => {
       fgRef.current?.zoomToFit?.(700, 140);
       fittedRef.current = true;
-    }, 500);
+    }, 800);
     return () => clearTimeout(t);
   }, [graphData]);
 
@@ -344,14 +357,15 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         nodeLabel={nodeTooltip}
         nodeColor={nodeColor}
         nodeVal={nodeVal}
-        nodeRelSize={3}
+        nodeRelSize={4}
         nodeOpacity={0.95}
-        nodeResolution={12}
+        nodeResolution={16}
         linkColor={linkColor}
         linkWidth={linkWidth}
-        linkOpacity={0.45}
+        linkOpacity={0.55}
         warmupTicks={0}
         cooldownTicks={0}
+        onEngineStop={handleEngineStop}
         onNodeClick={handleClick}
       />
       )}
@@ -366,7 +380,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         }}
       >
         {[
-          ['#94a3b8', 'document'], ['#f87171', 'conflict link'], ['#ffffff', 'cited'],
+          [HEALTH_COLOR.green, 'healthy'], [HEALTH_COLOR.yellow, 'stale'], [HEALTH_COLOR.red, 'conflict'], ['#ffffff', 'cited'],
         ].map(([c, label]) => (
           <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}` }} />
