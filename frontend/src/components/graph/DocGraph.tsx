@@ -291,10 +291,48 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return () => ro.disconnect();
   }, []);
 
-  // Re-tint/blink the cited nodes when the highlight changes. No camera movement.
+  // Re-tint/blink the cited nodes when the highlight changes, and — when the
+  // highlight asks to `focus` (e.g. "Show traces") — fly the camera so the
+  // cited nodes are centered in view.
   useEffect(() => {
-    fgRef.current?.refresh?.();
-  }, [highlight]);
+    const fg = fgRef.current;
+    fg?.refresh?.();
+
+    if (!fg || !highlight.focus || highlight.nodeIds.size === 0) return;
+
+    const targets = graphData.nodes.filter((n) => highlight.nodeIds.has(n.id));
+    if (targets.length === 0) return;
+
+    // Centroid of the cited nodes (positions are frozen after layout).
+    const c = targets.reduce(
+      (acc, n) => ({
+        x: acc.x + (n.x ?? 0),
+        y: acc.y + (n.y ?? 0),
+        z: acc.z + (n.z ?? 0),
+      }),
+      { x: 0, y: 0, z: 0 },
+    );
+    c.x /= targets.length;
+    c.y /= targets.length;
+    c.z /= targets.length;
+
+    // Pull the camera back along the direction from the scene origin through
+    // the centroid so it looks inward at the cited cluster. Fall back to a
+    // fixed direction when the centroid sits near the origin.
+    const mag = Math.hypot(c.x, c.y, c.z) || 1;
+    const dir =
+      mag > 1e-3
+        ? { x: c.x / mag, y: c.y / mag, z: c.z / mag }
+        : { x: 0, y: 0, z: 1 };
+    const distance = 420;
+    const camPos = {
+      x: c.x + dir.x * distance,
+      y: c.y + dir.y * distance,
+      z: c.z + dir.z * distance,
+    };
+
+    fg.cameraPosition?.(camPos, c, 900);
+  }, [highlight, graphData]);
 
   const nodeColor = useCallback((node: object) => {
     const n = asNode(node);
