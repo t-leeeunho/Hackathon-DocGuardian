@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, AlertTriangle, MessageSquare, Zap, Sparkles, Brain } from 'lucide-react';
-import { CitationChip } from './CitationChip';
+import { Send, AlertTriangle, MessageSquare, Zap, Sparkles, Brain, BookText } from 'lucide-react';
+import { ReferenceCard } from './ReferenceCard';
 import { ScopeToggle } from './ScopeToggle';
 import { useChat } from '../../hooks/useChat';
 import type { GraphHighlightEvent, Citation, ChatAnswer } from '../../lib/types';
@@ -332,23 +332,27 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
                       </div>
                     )}
 
-                    {/* Citations */}
+                    {/* References */}
                     {msg.answer.citations.length > 0 && (
                       <div>
                         <div
                           style={{
                             fontSize: 10,
                             color: '#64748b',
-                            marginBottom: 6,
+                            marginBottom: 8,
                             textTransform: 'uppercase',
                             letterSpacing: '0.05em',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
                           }}
                         >
-                          Evidence sources
+                          <BookText size={11} color="#8b5cf6" />
+                          References ({msg.answer.citations.length})
                         </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                           {msg.answer.citations.map((c, i) => (
-                            <CitationChip
+                            <ReferenceCard
                               key={c.chunkId ?? `${c.docId}-${i}`}
                               citation={c}
                               index={i}

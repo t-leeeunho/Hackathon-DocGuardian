@@ -29,6 +29,12 @@ export interface GraphNode {
   size: number;
   accessible: boolean;
   repo: string;
+  /** Analysis (Insights) overlay — additive, optional. */
+  qualityScore?: number;
+  brokenLinkCount?: number;
+  orphan?: boolean;
+  /** 0–1 PageRank centrality (drives size when present). */
+  centrality?: number;
 }
 
 export interface GraphEdge {
@@ -72,7 +78,30 @@ export interface DocumentResponse {
   path: string;
   commitSha: string;
   commitDate?: string;
+  /** Librarian-assigned title (drop-off docs that were rewritten). */
+  title?: string | null;
+  /** True when this doc is the AI-agent-friendly rewrite of a user drop-off. */
+  aiRewritten?: boolean;
+  /** Path the user originally dropped the file at, before re-placement. */
+  originalPath?: string | null;
+  /** Why the agent rewrote + filed it here. */
+  rationale?: string | null;
   chunks: ChunkDetail[];
+}
+
+/** Original drop-off vs. the AI rewrite (GET /original/{id}). */
+export interface DocumentSource {
+  docId: string;
+  path: string;
+  title?: string | null;
+  summary?: string | null;
+  aiRewritten: boolean;
+  rationale?: string | null;
+  originalPath?: string | null;
+  /** The user's untouched original document. */
+  originalContent: string;
+  /** The AI-agent-friendly rewrite shown by default. */
+  aiContent: string;
 }
 
 export interface DocumentIntakeResponse {
@@ -81,18 +110,51 @@ export interface DocumentIntakeResponse {
   edges: number;
   conflictEdges?: number;
   summary?: string;
+  /** Librarian-assigned title. */
+  title?: string | null;
+  /** Library category the agent filed the doc under. */
+  category?: string | null;
+  /** Why the agent rewrote + placed it here. */
+  rationale?: string | null;
+  /** Path the user dropped the file at. */
+  originalPath?: string | null;
+  /** Namespace-relative path the agent chose. */
+  suggestedPath?: string | null;
+  /** True when the stored content is an AI rewrite of the original. */
+  aiRewritten?: boolean;
 }
 
 export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
+
+/** One page imported from a website crawl (POST /ingest/url). */
+export interface UrlImportedDoc {
+  url: string;
+  title: string;
+  docId: string;
+  chunks: number;
+}
+
+/** Result of a website import (POST /ingest/url → job.result). */
+export interface UrlIngestResult {
+  startUrl: string;
+  namespace: string;
+  pagesFound: number;
+  imported: number;
+  docs: UrlImportedDoc[];
+  errors?: { url: string; error: string }[];
+}
 
 export interface IngestJob {
   jobId: string;
   docId: string;
   status: JobStatus;
-  result?: DocumentIntakeResponse | null;
+  result?: DocumentIntakeResponse | UrlIngestResult | null;
   error?: string | null;
   createdAt?: number;
   updatedAt?: number;
+  /** Live progress for multi-page (URL) imports. */
+  message?: string;
+  imported?: number;
 }
 
 /** A tiny event envelope from `WS /stream`. */
@@ -193,6 +255,114 @@ export interface MetricsDTO {
   conflictsResolved: number;
   duplicatesRemoved: number;
   docsWithVerificationStamp: number;
+}
+
+// --------------------------------------------------------------------------- //
+// Analysis / Insights (GET /analysis, /analysis/{docId}, /analysis/trends)
+// Deterministic-first; `llm` is populated only on demand (?llm=true).
+// --------------------------------------------------------------------------- //
+export interface DocQuality {
+  /** 0–1 composite quality score. */
+  qualityScore: number;
+  /** Flesch reading-ease score. */
+  readability: number;
+  /** Flesch–Kincaid grade level. */
+  gradeLevel: number;
+  /** 0–1 expected-section coverage. */
+  completenessScore: number;
+  /** 0–1 structural quality. */
+  structureScore: number;
+  wordCount: number;
+  placeholderCount: number;
+  issues: string[];
+}
+
+export interface DocLinks {
+  /** Unresolved internal link targets. */
+  brokenInternal: string[];
+  brokenLinkCount: number;
+  externalCount: number;
+  /** No inbound references. */
+  orphan: boolean;
+  /** No outbound references. */
+  deadEnd: boolean;
+}
+
+export interface DocDrift {
+  ageDays: number;
+  isStale: boolean;
+  /** 0–1 decay/at-risk score. */
+  riskScore: number;
+  riskReasons: string[];
+}
+
+export interface LlmQualityNotes {
+  clarityScore: number | null;
+  issues: string[];
+  suggestedSections: string[];
+}
+
+export interface DocAnalysis {
+  docId: string;
+  quality: DocQuality;
+  links: DocLinks;
+  drift: DocDrift;
+  /** 0–1 PageRank centrality. */
+  centrality: number;
+  /** Opt-in LLM notes (only when requested with ?llm=true). */
+  llm?: LlmQualityNotes | null;
+}
+
+/** A doc reference with a score + reasons, reused across report lists. */
+export interface DocRef {
+  docId: string;
+  score: number;
+  reasons: string[];
+}
+
+export interface AnalysisReport {
+  repoFilter?: string | null;
+  totalDocs: number;
+  qualityAvg: number;
+  brokenLinksDetected: number;
+  orphanCount: number;
+  atRiskCount: number;
+  worstQuality: DocRef[];
+  mostAtRisk: DocRef[];
+  topCentral: DocRef[];
+  asOf: string;
+}
+
+export interface TrendPoint {
+  date: string;
+  staleDetected: number;
+  staleFixed: number;
+  conflictsDetected: number;
+  conflictsResolved: number;
+  brokenLinks: number;
+  qualityAvg: number;
+}
+
+export interface RepoBreakdown {
+  repo: string;
+  totalDocs: number;
+  qualityAvg: number;
+  brokenLinks: number;
+  atRisk: number;
+}
+
+export interface HistogramBucket {
+  bucket: string;
+  count: number;
+}
+
+export interface TrendsDTO {
+  series: TrendPoint[];
+  byRepo: RepoBreakdown[];
+  proposalAcceptanceRate: number;
+  confidenceHistogram: HistogramBucket[];
+  evidenceCoverage: number;
+  asOf: string;
 }
 
 // --------------------------------------------------------------------------- //

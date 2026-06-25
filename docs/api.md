@@ -42,8 +42,10 @@
 | GET | `/search?q=&repo=&k=` | semantic search |
 | GET | `/tree?namespace=` | sidebar file tree (+ summaries) |
 | GET | `/graph?repo=` | knowledge graph (real health/edges) |
-| GET | `/documents/{docId}` | one document + its chunks |
-| POST | `/documents` | drop-off intake (sync `201`, or `?background=true` → `202`+job) |
+| GET | `/documents/{docId}` | one document + its chunks (the AI-friendly rewrite) |
+| GET | `/original/{docId}` | the user's original drop-off + the AI rewrite (compare) |
+| POST | `/documents` | drop-off intake — **Librarian rewrites + re-files** (sync `201`, or `?background=true` → `202`+job) |
+| POST | `/ingest/url` | crawl a website URL + sub-pages and import them (`202`+job) |
 | GET | `/jobs/{jobId}` | async ingest job status |
 | GET | `/provenance/{docId}` | append-only audit history for a doc |
 | POST | `/chat` | Curator evidence-backed answer (Azure or `CHAT_PROVIDER=fake`) |
@@ -116,7 +118,10 @@ edges include `references`, `duplicate-of`, `conflicts-with`, `deprecated-by`.
 
 ### GET `/documents/{docId}`
 `docId` contains slashes (it is a path) — send it verbatim, e.g.
-`/documents/garnet/website/README.md`.
+`/documents/garnet/website/README.md`. For a user drop-off the returned `chunks`
+are the **AI-agent-friendly rewrite** the Librarian produced (the default view);
+`aiRewritten`/`originalPath`/`rationale` describe the rewrite, and the untouched
+source is available at `GET /original/{docId}`.
 ```jsonc
 {
   "docId": "garnet/website/README.md",
@@ -124,9 +129,30 @@ edges include `references`, `duplicate-of`, `conflicts-with`, `deprecated-by`.
   "path": "website/README.md",
   "commitSha": "…",
   "commitDate": "2026-06-24T15:41:52+00:00",   // ISO-8601 string
+  "title": "Build Guide",                       // Librarian title (null for repo docs)
+  "aiRewritten": false,                          // true for rewritten drop-offs
+  "originalPath": null,                          // where the user dropped it (if rewritten)
+  "rationale": null,                             // why it was rewritten + filed here
   "chunks": [
     { "chunkId": "…#0", "headingPath": ["Intro"], "lineRange": [1, 20], "text": "…" }
   ]
+}
+```
+
+### GET `/original/{docId}`
+The user's **original** drop-off alongside the **AI rewrite** that is shown by
+default. DocGuardian hides the original until it is explicitly requested. Uses an
+`/original/` prefix so the catch-all `/documents/{id}` route does not shadow it.
+```jsonc
+{
+  "docId": "user/security/auth.md",
+  "path": "security/auth.md",
+  "title": "Auth", "summary": "Send the API key in the Authorization header.",
+  "aiRewritten": true,
+  "rationale": "Filed under `security/` and rewritten with explicit front-matter…",
+  "originalPath": "My Notes/auth tips.md",       // where the user dropped it
+  "originalContent": "# Auth\n\nSend the API key…",  // untouched source
+  "aiContent": "---\ntitle: Auth\n…"             // the AI-agent-friendly rewrite
 }
 ```
 
@@ -159,15 +185,30 @@ catch-all `/documents/{id}` route does not shadow it.
 
 ## 4. Drop-off intake (sync + async)
 
+User drop-off runs through the **Librarian**: it rewrites the raw content into an
+AI-agent-friendly document (explicit front-matter, a self-contained summary,
+normalized structure) and decides where it belongs, re-filing it under a category
+folder regardless of the user's chosen path. The rewrite is what gets chunked,
+embedded, indexed, and shown by default; the original is preserved (see
+`GET /original/{docId}`). The rewrite uses Azure (or `CHAT_PROVIDER=fake`) when
+available and **degrades to a deterministic local rewrite/placement** otherwise, so
+ingestion never blocks on the LLM.
+
 ### POST `/documents` (sync — `201`)
 Body:
 ```json
-{ "name": "redis-migration.md", "content": "# Redis Migration\n\n…", "namespace": "user" }
+{ "name": "My Notes/auth tips.md", "content": "# Auth\n\nSend the API key…", "namespace": "user" }
 ```
 Response (the whole insert is **atomic** — doc + edges + chunks + conflict edges +
-summary commit together or roll back entirely):
+summary commit together or roll back entirely). `docId` reflects the agent's
+**placement**, which can differ from the dropped path:
 ```json
-{ "docId": "user/redis-migration.md", "chunks": 3, "edges": 1, "conflictEdges": 2, "summary": "How to migrate from Redis to Garnet…" }
+{ "docId": "user/security/auth.md", "chunks": 2, "edges": 0, "conflictEdges": 0,
+  "summary": "Send the API key in the Authorization header.",
+  "title": "Auth", "category": "security",
+  "rationale": "Filed under `security/` and rewritten for agent retrieval…",
+  "originalPath": "My Notes/auth tips.md", "suggestedPath": "security/auth.md",
+  "aiRewritten": true }
 ```
 - `415` for non-text formats (PDF/DOCX). `500` (`IngestError`) ⇒ nothing persisted.
 
@@ -186,6 +227,24 @@ Poll until terminal, or listen on `WS /stream` for the `ingest` event.
   "error": null }
 ```
 `status`: `queued → processing → succeeded | failed`.
+
+### POST `/ingest/url` (async — `202`)
+Crawl a website URL and its sub-pages (same host + path prefix), extract each page
+as markdown, and import it through the **Librarian** (rewrite + re-file + embed).
+Always background — returns a job; poll `GET /jobs/{jobId}`.
+```json
+{ "url": "https://microsoft.github.io/garnet/docs", "maxPages": 8, "maxDepth": 2, "namespace": null }
+```
+On success the job `result` summarizes the import (pages are grouped under a
+namespace derived from the host):
+```jsonc
+{ "startUrl": "https://microsoft.github.io/garnet/docs", "namespace": "microsoft-github-io",
+  "pagesFound": 3, "imported": 3,
+  "docs": [ { "url": "…/docs", "title": "Documentation", "docId": "microsoft-github-io/software/…md", "chunks": 5 } ],
+  "errors": [] }
+```
+The job emits `imported`/`message` progress fields and `ingest`/`graph` events on
+`WS /stream` as pages land.
 
 ---
 

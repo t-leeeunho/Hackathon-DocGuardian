@@ -21,6 +21,11 @@ interface FGNode {
   health: string;
   repo: string;
   accessible: boolean;
+  /** Insights overlay fields (additive, optional). */
+  qualityScore?: number;
+  brokenLinkCount?: number;
+  orphan?: boolean;
+  centrality?: number;
   x?: number;
   y?: number;
   z?: number;
@@ -58,6 +63,12 @@ const LINK_COLOR: Record<string, string> = {
 // react-force-graph hands callbacks its internal node/link objects; cast to ours.
 function asNode(o: object): FGNode {
   return o as unknown as FGNode;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+  );
 }
 
 type Vec3 = { x: number; y: number; z: number };
@@ -153,6 +164,10 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         health: n.health,
         repo: n.repo,
         accessible: n.accessible,
+        qualityScore: n.qualityScore,
+        brokenLinkCount: n.brokenLinkCount,
+        orphan: n.orphan,
+        centrality: n.centrality,
         x: c.x + p.x,
         y: c.y + p.y,
         z: c.z + p.z,
@@ -303,6 +318,25 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return type === 'conflicts-with' || type === 'duplicate-of' ? 1.2 : 0.8;
   }, []);
 
+  // Hover tooltip enriched with Insights (quality / centrality / broken / orphan).
+  const nodeTooltip = useCallback((node: object) => {
+    const n = asNode(node);
+    const chips: string[] = [];
+    if (n.qualityScore != null) chips.push(`quality ${Math.round(n.qualityScore * 100)}%`);
+    if (n.centrality != null) chips.push(`centrality ${Math.round(n.centrality * 100)}%`);
+    if (n.brokenLinkCount) chips.push(`${n.brokenLinkCount} broken link${n.brokenLinkCount > 1 ? 's' : ''}`);
+    if (n.orphan) chips.push('orphan');
+    if (!n.accessible) chips.push('locked');
+    const meta = chips.length
+      ? `<div style="color:#94a3b8;font-size:11px;margin-top:3px">${escapeHtml(chips.join('  ·  '))}</div>`
+      : '';
+    return (
+      `<div style="padding:5px 9px;background:rgba(8,8,14,0.92);border:1px solid rgba(139,92,246,0.3);` +
+      `border-radius:6px;color:#e2e8f0;font-size:12px;font-family:Inter,system-ui;box-shadow:0 4px 16px rgba(0,0,0,0.5)">` +
+      `${escapeHtml(n.name)}${meta}</div>`
+    );
+  }, []);
+
   const handleClick = useCallback(
     (node: object) => {
       onNodeClick?.(asNode(node).id);
@@ -320,7 +354,7 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         graphData={graphData}
         backgroundColor="#000000"
         showNavInfo={false}
-        nodeLabel="name"
+        nodeLabel={nodeTooltip}
         nodeColor={nodeColor}
         nodeVal={nodeVal}
         nodeRelSize={4}

@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy this into ~/.copilot/mcp-config.json (Copilot CLI) — or use `/mcp add`. Adjust the absolute paths to match your checkout. The DocGuardian API must be running (uvicorn app.main:app --port 8000).",
+  "mcpServers": {
+    "docguardian": {
+      "type": "local",
+      "command": "C:\\workspace\\Intern-Hackathon-DocGuardian\\backend\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\workspace\\Intern-Hackathon-DocGuardian\\backend\\app\\mcp_server.py"],
+      "env": {
+        "DOCGUARDIAN_API_URL": "http://localhost:8000"
+      },
+      "tools": ["*"]
+    }
+  }
+}

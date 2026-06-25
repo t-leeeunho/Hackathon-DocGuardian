@@ -88,6 +88,15 @@ def init_schema(dim: int) -> None:
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at        TIMESTAMPTZ;
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary           TEXT;
 
+    -- Librarian (AI-native rewrite + placement). The stored chunks/`ai_content`
+    -- are the agent-friendly rewrite shown by default; `original_content` keeps
+    -- the user's untouched drop-off so a human can always view the source.
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS original_content  TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS original_path     TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS ai_content        TEXT;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS ai_rewritten      BOOLEAN DEFAULT FALSE;
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS rationale         TEXT;
+
     -- Persisted agent proposals (README Section 8A.4 AgentProposal). The full
     -- agent payload is kept in `payload` (snake_case JSON); indexed columns
     -- drive lookups, status transitions, and metrics.
@@ -124,6 +133,27 @@ def init_schema(dim: int) -> None:
     CREATE INDEX IF NOT EXISTS idx_proposals_doc ON proposals(doc_id);
     CREATE INDEX IF NOT EXISTS idx_provenance_doc ON provenance(doc_id);
     CREATE INDEX IF NOT EXISTS idx_provenance_proposal ON provenance(proposal_id);
+
+    -- Time-series snapshots for the Insights / Trends analysis subsystem (direction D).
+    -- Rows are appended on ingest-complete, apply/rollback events, and POST /analysis/snapshot.
+    -- append-only; never updated or deleted (rollback writes a new row).
+    CREATE TABLE IF NOT EXISTS analysis_snapshots (
+        snapshot_id         TEXT PRIMARY KEY,
+        taken_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+        repo                TEXT,
+        total_docs          INTEGER,
+        quality_avg         REAL,
+        broken_links        INTEGER,
+        stale_detected      INTEGER,
+        conflicts_detected  INTEGER,
+        duplicates_detected INTEGER,
+        orphan_count        INTEGER,
+        at_risk_count       INTEGER,
+        payload             JSONB
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_taken ON analysis_snapshots(taken_at);
+    CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_repo  ON analysis_snapshots(repo);
     """
     with get_conn() as conn:
         with conn.cursor() as cur:

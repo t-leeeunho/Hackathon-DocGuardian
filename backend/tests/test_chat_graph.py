@@ -66,6 +66,29 @@ def test_chat_low_model_confidence_forces_review():
     assert out.needs_human_review is True
 
 
+def test_chat_citations_carry_snippet_and_chunk_id(patch_retrieval, rows_strong):
+    patch_retrieval(rows_strong)
+    answer = run_chat("how do I build vscode?", repo="vscode")
+    top = answer["citations"][0]
+    # Provenance for the reference card is taken from the retrieved row, not the model.
+    assert top["chunk_id"] == "vscode/build.md#Build#0"
+    assert top["text"].startswith("Run `npm ci`")
+    assert top["line_range"] == [8, 12]
+
+
+def test_enrich_citations_fills_snippet_from_rows():
+    from app.agents.graph import _enrich_citations
+    from app.agents.schemas import Citation
+
+    rows = [make_row("real/doc.md", 0.9, text="Set `FOO=bar` in the env file.")]
+    # A model citation with no snippet/chunk gets them filled from the row.
+    out = _enrich_citations([Citation(doc_id="real/doc.md", line_range=[0, 0], relevance=0.9)], rows)
+    assert out[0].chunk_id == "real/doc.md#Build#0"
+    assert out[0].text == "Set `FOO=bar` in the env file."
+    assert out[0].line_range == [8, 12]
+    assert out[0].commit_sha == "f00dcafe1234"
+
+
 def test_chat_mixed_citations_keep_grounded_without_review():
     from app.agents.graph import _ground_chat_citations
     from app.agents.schemas import ChatAnswer, Citation

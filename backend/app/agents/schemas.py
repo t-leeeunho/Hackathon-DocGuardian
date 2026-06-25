@@ -29,8 +29,10 @@ Recommendation = Literal["approve", "needs-review", "reject"]
 
 class Citation(BaseModel):
     doc_id: str = Field(..., description="docId of the supporting document")
+    chunk_id: str = Field("", description="chunkId of the supporting chunk")
     line_range: list[int] = Field(..., description="[start, end] source lines")
     commit_sha: str = Field("", description="commit the evidence came from")
+    text: str = Field("", description="verbatim snippet from the cited chunk")
     relevance: float = Field(..., ge=0, le=1, description="how relevant this source is")
 
 
@@ -119,6 +121,35 @@ class GuardianReview(BaseModel):
     risk_level: RiskLevel = "medium"
     conflicts_with: list[str] = Field(default_factory=list)
     uncertainty: Optional[str] = Field(None, description="explanation when confidence is low")
+
+
+class LibrarianPlan(BaseModel):
+    """AI-native rewrite + placement plan for a single ingested document.
+
+    Produced by the Librarian agent for **user drop-off content**: it rewrites the
+    raw document into an agent-friendly form and decides where it belongs in the
+    library. The intake layer always sanitizes ``suggested_path`` and falls back to
+    a deterministic plan, so the model never controls where bytes land unchecked
+    (mirrors how provenance is owned by the graph, not the LLM).
+    """
+
+    title: str = Field(..., description="concise, descriptive document title")
+    category: str = Field(
+        "general", description="top-level library category the agent files this under"
+    )
+    suggested_path: str = Field(
+        ...,
+        description="namespace-relative path the agent chose, e.g. 'guides/deployment.md'",
+    )
+    summary: str = Field("", description="one-line description of the document")
+    rewritten_content: str = Field(
+        ..., description="the AI-agent-friendly rewrite of the document (markdown)"
+    )
+    rationale: str = Field(
+        "", description="why this rewrite and placement were chosen"
+    )
+    tags: list[str] = Field(default_factory=list, description="topical tags for retrieval")
+    confidence: float = Field(0.7, ge=0, le=1)
 
 
 class AgentProposal(BaseModel):
