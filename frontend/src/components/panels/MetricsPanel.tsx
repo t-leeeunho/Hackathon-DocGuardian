@@ -1,6 +1,19 @@
 import { useState, useEffect } from 'react';
 import { BarChart2, CheckCircle, AlertTriangle, Link, Shield, Zap } from 'lucide-react';
 import { useMetrics } from '../../hooks/useMetrics';
+import { useDemo } from '../../hooks/useDemo';
+import type { MetricsDTO } from '../../lib/types';
+
+/** Add an optional demo "metrics delta" (the guided-demo approval bump) on top of
+ *  the live/fixture metrics so the header counters animate up during the demo. */
+function applyMetricsDelta(base: MetricsDTO, delta: Partial<MetricsDTO>): MetricsDTO {
+  if (!delta || Object.keys(delta).length === 0) return base;
+  const out = { ...base } as Record<string, number>;
+  for (const k of Object.keys(delta)) {
+    out[k] = (out[k] ?? 0) + ((delta as Record<string, number>)[k] ?? 0);
+  }
+  return out as unknown as MetricsDTO;
+}
 
 function AnimatedNumber({ target }: { target: number }) {
   const [value, setValue] = useState(0);
@@ -79,7 +92,9 @@ interface MetricsPanelProps {
 }
 
 export function MetricsPanel({ compact = false }: MetricsPanelProps) {
-  const { data: metrics, offline } = useMetrics();
+  const { data, offline } = useMetrics();
+  const { metricsDelta } = useDemo();
+  const metrics = applyMetricsDelta(data, metricsDelta);
 
   if (compact) {
     // Inline header strip

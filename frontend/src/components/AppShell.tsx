@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { FileTree } from './sidebar/FileTree';
 import { DocGraph } from './graph/DocGraph';
 import { ChatPanel } from './chat/ChatPanel';
@@ -13,14 +13,20 @@ import { useGraph } from '../hooks/useGraph';
 import { useHighlight } from '../hooks/useHighlight';
 import { useStream } from '../hooks/useStream';
 import { usePanelWidth } from '../hooks/usePanelWidth';
+import { useDemo } from '../hooks/useDemo';
+import { DemoControlBar } from './demo/DemoControlBar';
+import { DemoCaption } from './demo/DemoCaption';
 import { api, ApiError } from '../lib/api';
 import { fixtureProposal } from '../lib/fixtures';
 import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent, StreamEvent } from '../lib/types';
-import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3 } from 'lucide-react';
+import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3, Play, CheckCircle2 } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export function AppShell() {
   const { data: graphData, loading: graphLoading, offline, refresh: refreshGraph } = useGraph();
   const { highlight, emit: emitHighlight, clear: clearHighlight } = useHighlight();
+  const demo = useDemo();
 
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentResponse | null>(null);
@@ -33,6 +39,8 @@ export function AppShell() {
   const [resizing, setResizing] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
   const [insightsTab, setInsightsTab] = useState<'corpus' | 'doc'>('corpus');
+  const [approved, setApproved] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   // Drag-resizable, persisted panel widths (compact defaults).
   const sidebar = usePanelWidth('sidebar', 220, 150, 480);
@@ -63,6 +71,7 @@ export function AppShell() {
     setProposalLoading(true);
     setShowProposal(true);
     setProposal(null);
+    setApproved(false);
     try {
       const result = await api.propose(docId, 'Review this document for staleness and conflicts.');
       setProposal(result);
@@ -76,6 +85,30 @@ export function AppShell() {
     } finally {
       setProposalLoading(false);
     }
+  }, []);
+
+  const handleApprove = useCallback(async () => {
+    setApproved(true);
+    setToast('Change approved — provenance recorded.');
+    window.setTimeout(() => setToast(null), 4200);
+    const id = proposal?.proposalId;
+    if (id) {
+      try {
+        await fetch(`${API_BASE}/proposals/${encodeURIComponent(id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approver: 'demo@docguardian' }),
+        });
+      } catch {
+        /* offline demo — optimistic success is fine */
+      }
+    }
+  }, [proposal]);
+
+  const handleReject = useCallback(() => {
+    setShowProposal(false);
+    setProposal(null);
+    setApproved(false);
   }, []);
 
   const handleHighlight = useCallback((event: GraphHighlightEvent) => {
@@ -100,6 +133,37 @@ export function AppShell() {
       return next;
     });
   }, [selectedDocId]);
+
+  // Register the guided-demo drivers so the auto-pilot can drive real handlers.
+  const { registerDriver } = demo;
+  useEffect(() => {
+    registerDriver({
+      selectDoc: handleNodeClick,
+      highlight: (nodeIds, opts) =>
+        handleHighlight({
+          reason: 'chat-evidence',
+          nodeIds,
+          intensity: opts?.intensity ?? 0.9,
+          ttlMs: 9000,
+          focus: opts?.focus,
+        }),
+      clearHighlight: () => {
+        clearHighlight();
+        setCitedDocIds([]);
+      },
+      openInsights: (tab) => {
+        setShowInsights(true);
+        setInsightsTab(tab);
+      },
+      closeInsights: () => setShowInsights(false),
+      propose: (docId) => {
+        setShowInsights(false);
+        const target = docId ?? selectedDocId;
+        if (target) handlePropose(target);
+      },
+      approve: () => handleApprove(),
+    });
+  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handlePropose, handleApprove, selectedDocId]);
 
   // Live updates: refresh the graph when the backend reports an ingest finished,
   // a graph change, or an approved proposal (README §8B WS /stream).
@@ -176,6 +240,21 @@ export function AppShell() {
 
         {/* Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Guided demo */}
+          <button
+            onClick={demo.start}
+            title="Run the guided auto-pilot demo"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: 'linear-gradient(135deg, rgba(34,211,160,0.18), rgba(59,130,246,0.14))',
+              border: '1px solid rgba(34,211,160,0.35)',
+              cursor: 'pointer', color: '#34d399', transition: 'all 0.2s',
+            }}
+          >
+            <Play size={12} /> Demo
+          </button>
+
           {/* Insights toggle */}
           <button
             onClick={toggleInsights}
@@ -356,8 +435,11 @@ export function AppShell() {
             <ProposalPanel
               proposal={proposal}
               loading={proposalLoading}
-              onClose={() => { setShowProposal(false); setProposal(null); }}
+              onClose={() => { setShowProposal(false); setProposal(null); setApproved(false); }}
               onHighlight={handleHighlight}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              approved={approved}
             />
           )}
 
@@ -449,6 +531,26 @@ export function AppShell() {
           )}
         </div>
       </div>
+
+      {/* Guided demo overlays (inert unless active) */}
+      <DemoCaption />
+      <DemoControlBar />
+
+      {toast && (
+        <div
+          className="animate-fade-in-up"
+          style={{
+            position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1002, padding: '10px 18px', borderRadius: 10,
+            background: 'rgba(34,211,160,0.14)', border: '1px solid rgba(34,211,160,0.4)',
+            color: '#34d399', fontSize: 13, fontWeight: 600,
+            boxShadow: '0 8px 30px rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}
+        >
+          <CheckCircle2 size={15} /> {toast}
+        </div>
+      )}
     </div>
   );
 }
