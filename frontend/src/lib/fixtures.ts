@@ -38,10 +38,24 @@ export const fixtureGraph: GraphDTO = {
 
 export const fixtureChatAnswer: ChatAnswer = {
   answer:
-    'To build Garnet from source, run `dotnet build -c Release` from the repository ' +
-    'root after installing the .NET 8 SDK. The canonical instructions live in ' +
-    '`garnet/docs/build.md`; an older `build-legacy.md` still references .NET 6 and ' +
-    'conflicts with the current guide.',
+    '**Building Garnet from source** comes down to installing the .NET SDK and running a ' +
+    'Release build from the repo root.\n\n' +
+    '### Prerequisites\n' +
+    '- The **.NET 8 SDK** (the current `garnet/docs/build.md` targets .NET 8 — an older ' +
+    '`build-legacy.md` still says .NET 6 and conflicts with it).\n' +
+    '- A clone of the repository and a terminal at its root.\n\n' +
+    '### Steps\n' +
+    '1. Clone the repo and `cd` into it.\n' +
+    '2. Restore dependencies: `dotnet restore`.\n' +
+    '3. Build in Release configuration:\n\n' +
+    '```bash\n' +
+    'dotnet build -c Release\n' +
+    '```\n\n' +
+    '4. (Optional) Run the test suite with `dotnet test -c Release` to verify the build.\n\n' +
+    '### Notes\n' +
+    'The canonical instructions live in `garnet/docs/build.md`. If you hit SDK-version errors, ' +
+    'check that you are on .NET 8 — the stale `build-legacy.md` page is a known conflicting ' +
+    'source and is flagged for review.',
   scope: 'garnet',
   confidence: 0.82,
   needsHumanReview: false,

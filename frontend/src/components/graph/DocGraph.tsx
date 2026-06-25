@@ -180,6 +180,26 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return { nodes, links };
   }, [clusters, data]);
 
+  // Refs so the focus/camera effect can read the latest layout without being a
+  // dependency (it should only fire when the highlight changes, not on refresh).
+  const graphDataRef = useRef(graphData);
+  graphDataRef.current = graphData;
+  const clustersRef = useRef(clusters);
+  clustersRef.current = clusters;
+
+  // Cluster color per repo + the distinct repos of the currently chat-referenced
+  // nodes — drives the "Referenced in …" caption.
+  const colorByRepo = useMemo(
+    () => new Map(clusters.map((c) => [c.repo, c.color])),
+    [clusters],
+  );
+  const focusedRepos = useMemo(() => {
+    if (highlight.reason !== 'chat-evidence' || highlight.nodeIds.size === 0) return [];
+    const repos = new Set<string>();
+    for (const n of graphData.nodes) if (highlight.nodeIds.has(n.id)) repos.add(n.repo);
+    return [...repos];
+  }, [highlight, graphData]);
+
   // One well-separated 3D center per repo is applied by seeding node positions
   // (see graphData above). No runtime d3 force manipulation — that races the
   // library's animation loop and crashes.
@@ -291,9 +311,53 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
     return () => ro.disconnect();
   }, []);
 
-  // Re-tint/blink the cited nodes when the highlight changes. No camera movement.
+  // Re-tint the cited nodes, and — when the highlight asks to "focus" (a chat
+  // answer or a replayed trace) — fly the camera in to frame those reference
+  // nodes together with their cluster center(s), so the user can see which repo
+  // each reference came from and read the highlighted nodes clearly.
   useEffect(() => {
     fgRef.current?.refresh?.();
+    const h = highlight;
+    if (!h.focus || h.nodeIds.size === 0 || !fgRef.current?.cameraPosition) return;
+
+    const pts: Array<{ x: number; y: number; z: number }> = [];
+    const repos = new Set<string>();
+    for (const n of graphDataRef.current.nodes) {
+      if (h.nodeIds.has(n.id)) {
+        repos.add(n.repo);
+        if (n.x != null && n.y != null && n.z != null) {
+          pts.push({ x: n.x, y: n.y, z: n.z });
+        }
+      }
+    }
+    // Include each referenced cluster's center so its floating label stays in frame.
+    for (const c of clustersRef.current) if (repos.has(c.repo)) pts.push(c.center);
+    if (pts.length === 0) return;
+
+    const C = pts.reduce(
+      (a, p) => ({ x: a.x + p.x, y: a.y + p.y, z: a.z + p.z }),
+      { x: 0, y: 0, z: 0 },
+    );
+    C.x /= pts.length;
+    C.y /= pts.length;
+    C.z /= pts.length;
+    let R = 0;
+    for (const p of pts) {
+      R = Math.max(R, Math.hypot(p.x - C.x, p.y - C.y, p.z - C.z));
+    }
+    // Distance to frame the reference(s): clamp so a single node isn't too close
+    // and a wide spread isn't too far.
+    const dist = Math.min(1500, Math.max(240, R * 2.3 + 90));
+    const dir = { x: 0.35, y: 0.3, z: 1 };
+    const dl = Math.hypot(dir.x, dir.y, dir.z);
+    const cam = {
+      x: C.x + (dir.x / dl) * dist,
+      y: C.y + (dir.y / dl) * dist,
+      z: C.z + (dir.z / dl) * dist,
+    };
+    // Small delay so the re-tint paints before the camera starts moving.
+    const t = setTimeout(() => fgRef.current?.cameraPosition?.(cam, C, 1100), 60);
+    return () => clearTimeout(t);
   }, [highlight]);
 
   const nodeColor = useCallback((node: object) => {
@@ -368,6 +432,33 @@ export function DocGraph({ data, highlight, onNodeClick, loading }: DocGraphProp
         onEngineStop={handleEngineStop}
         onNodeClick={handleClick}
       />
+      )}
+
+      {/* Referenced-repos caption (shown while a chat answer's evidence is focused) */}
+      {focusedRepos.length > 0 && (
+        <div
+          style={{
+            position: 'absolute', top: 16, left: 16, zIndex: 6,
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            maxWidth: 'calc(100% - 32px)',
+            padding: '6px 12px', borderRadius: 9,
+            background: 'rgba(18,18,26,0.78)', border: '1px solid rgba(139,92,246,0.25)',
+            backdropFilter: 'blur(8px)', boxShadow: '0 4px 16px rgba(0,0,0,0.45)',
+          }}
+        >
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#a78bfa' }}>
+            Referenced in
+          </span>
+          {focusedRepos.map((repo) => {
+            const c = colorByRepo.get(repo) ?? '#a5b4fc';
+            return (
+              <span key={repo} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#e2e8f0' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}` }} />
+                {repo}
+              </span>
+            );
+          })}
+        </div>
       )}
 
       {/* legend */}

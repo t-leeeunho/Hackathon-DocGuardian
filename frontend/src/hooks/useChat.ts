@@ -87,6 +87,7 @@ export function useChat(
             nodeIds: [...new Set(answer.citations.map(c => c.docId))],
             intensity: Math.max(...answer.citations.map(c => c.relevance)),
             ttlMs: 8000,
+            focus: true,
           };
           onHighlight(event);
         }

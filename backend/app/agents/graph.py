@@ -66,7 +66,7 @@ def _format_sources(rows: list[dict]) -> str:
         heading = " > ".join(r["heading_path"]) if r["heading_path"] else "(root)"
         blocks.append(
             f"[{i}] doc_id={r['doc_id']} lines={r['line_start']}-{r['line_end']} "
-            f"score={r['score']:.3f}\n    heading: {heading}\n    {r['text'][:600]}"
+            f"score={r['score']:.3f}\n    heading: {heading}\n    {r['text'][:1200]}"
         )
     return "\n\n".join(blocks) if blocks else "(no sources found)"
 
@@ -268,12 +268,19 @@ Rules:
    a human should check, instead of inventing an answer.
 2. Cite each source you use by its exact doc_id and line range; rely on the highest-relevance
    sources when they overlap or disagree.
-3. Be thorough and engineering-accurate: lead with the direct answer (the exact command, path,
-   config value, or concrete steps), then explain the key details, prerequisites, and caveats the
-   SOURCES mention. Use short ordered steps or bullets when the answer has multiple parts, and put
-   commands, paths, and config keys in backticks. Aim for a complete, self-contained answer — a
-   few short paragraphs or a step list, not a single line — but never pad with anything the
-   SOURCES do not support.
+3. Be thorough, comprehensive, and engineering-accurate. Write a complete, well-structured
+   answer, not a one-liner:
+   - Open with a one- or two-sentence direct answer (the exact command, path, config value, or
+     bottom line).
+   - Then expand: explain the key steps in order, the prerequisites, important options/flags,
+     how it works, and the caveats, gotchas, or version/platform notes the SOURCES mention.
+   - Use Markdown for readability: short ordered steps or bullet lists for multi-part answers,
+     `##`/`###` sub-headings when the answer has distinct sections, and fenced code blocks for
+     commands or config; put inline commands, paths, and config keys in backticks.
+   - Include a concrete example or command sequence whenever the SOURCES contain one.
+   - Synthesise across multiple SOURCES when they each cover part of the answer.
+   Aim for a genuinely helpful, self-contained explanation (several paragraphs / a full step
+   list when the topic warrants it) — but never pad with anything the SOURCES do not support.
 4. Set confidence in [0,1] to how directly the SOURCES support the answer: ~0.9 when a source
    states it outright, ~0.6 when you infer it, <0.5 when the evidence is thin.
 5. In `reasoning`, give a brief trace (1-3 short sentences) of HOW you derived the answer from

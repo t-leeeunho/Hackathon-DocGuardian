@@ -66,6 +66,7 @@ def _azure_chat_llm(temperature: float):
         azure_deployment=os.environ["AZURE_OPENAI_CHAT_DEPLOYMENT"],
         api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01"),
         temperature=temperature,
+        max_tokens=int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "1500")),
     )
 
 

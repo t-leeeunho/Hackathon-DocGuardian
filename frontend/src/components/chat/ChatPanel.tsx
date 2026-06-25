@@ -65,15 +65,30 @@ function LoadingSkeleton() {
 export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [openTraces, setOpenTraces] = useState<Record<string, boolean>>({});
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const questionRef = useRef<HTMLDivElement>(null);
   const { messages, scope, setScope, loading, sendMessage, citationHighlight } = useChat(
     onHighlight,
     defaultRepo,
   );
 
+  // The id of the most recent user message — the anchor we scroll to.
+  const lastUserId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages[i].id;
+    }
+    return null;
+  })();
+
+  // When a new question is asked, scroll it to the TOP of the chat so the answer
+  // reads from its beginning (rather than jumping to the very bottom).
+  const anchoredIdRef = useRef<string | null>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!lastUserId || lastUserId === anchoredIdRef.current) return;
+    anchoredIdRef.current = lastUserId;
+    requestAnimationFrame(() => {
+      questionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [lastUserId]);
 
   // Guided demo: when a chat beat fires, type the question out then auto-send.
   const demo = useDemo();
@@ -223,6 +238,7 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
         {messages.map(msg => (
           <div
             key={msg.id}
+            ref={msg.id === lastUserId ? questionRef : undefined}
             className="animate-fade-in-up"
             style={{
               display: 'flex',
@@ -415,7 +431,6 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
             )}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}

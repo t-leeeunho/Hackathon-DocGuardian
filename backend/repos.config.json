@@ -34,5 +34,266 @@
     "sparsePaths": ["build", "extensions", "src"],
     "docGlobs": ["**/*.md"],
     "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "microsoft/semantic-kernel",
+    "shortName": "semantic-kernel",
+    "url": "https://github.com/microsoft/semantic-kernel",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 120
+  },
+  {
+    "repo": "microsoft/terminal",
+    "shortName": "terminal",
+    "url": "https://github.com/microsoft/terminal",
+    "branch": "main",
+    "sparsePaths": ["doc"],
+    "docGlobs": ["doc/*.md", "doc/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "microsoft/PowerToys",
+    "shortName": "powertoys",
+    "url": "https://github.com/microsoft/PowerToys",
+    "branch": "main",
+    "sparsePaths": ["doc"],
+    "docGlobs": ["doc/*.md", "doc/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "vuejs/docs",
+    "shortName": "vue",
+    "url": "https://github.com/vuejs/docs",
+    "branch": "main",
+    "sparsePaths": ["src"],
+    "docGlobs": ["src/*.md", "src/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "vitejs/vite",
+    "shortName": "vite",
+    "url": "https://github.com/vitejs/vite",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "fastapi/fastapi",
+    "shortName": "fastapi",
+    "url": "https://github.com/fastapi/fastapi",
+    "branch": "master",
+    "sparsePaths": ["docs/en/docs"],
+    "docGlobs": ["docs/en/docs/*.md", "docs/en/docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "pydantic/pydantic",
+    "shortName": "pydantic",
+    "url": "https://github.com/pydantic/pydantic",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "ollama/ollama",
+    "shortName": "ollama",
+    "url": "https://github.com/ollama/ollama",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "prometheus/prometheus",
+    "shortName": "prometheus",
+    "url": "https://github.com/prometheus/prometheus",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "sveltejs/svelte",
+    "shortName": "svelte",
+    "url": "https://github.com/sveltejs/svelte",
+    "branch": "main",
+    "sparsePaths": ["documentation"],
+    "docGlobs": ["documentation/*.md", "documentation/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "nuxt/nuxt",
+    "shortName": "nuxt",
+    "url": "https://github.com/nuxt/nuxt",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "vitest-dev/vitest",
+    "shortName": "vitest",
+    "url": "https://github.com/vitest-dev/vitest",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "jestjs/jest",
+    "shortName": "jest",
+    "url": "https://github.com/jestjs/jest",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "astral-sh/uv",
+    "shortName": "uv",
+    "url": "https://github.com/astral-sh/uv",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "tiangolo/typer",
+    "shortName": "typer",
+    "url": "https://github.com/tiangolo/typer",
+    "branch": "master",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "huggingface/diffusers",
+    "shortName": "diffusers",
+    "url": "https://github.com/huggingface/diffusers",
+    "branch": "main",
+    "sparsePaths": ["docs/source/en"],
+    "docGlobs": ["docs/source/en/*.md", "docs/source/en/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "traefik/traefik",
+    "shortName": "traefik",
+    "url": "https://github.com/traefik/traefik",
+    "branch": "master",
+    "sparsePaths": ["docs/content"],
+    "docGlobs": ["docs/content/*.md", "docs/content/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "denoland/docs",
+    "shortName": "deno",
+    "url": "https://github.com/denoland/docs",
+    "branch": "main",
+    "sparsePaths": ["runtime"],
+    "docGlobs": ["runtime/*.md", "runtime/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "astral-sh/ruff",
+    "shortName": "ruff",
+    "url": "https://github.com/astral-sh/ruff",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "rust-lang/book",
+    "shortName": "rust-book",
+    "url": "https://github.com/rust-lang/book",
+    "branch": "main",
+    "sparsePaths": ["src"],
+    "docGlobs": ["src/*.md", "src/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "tokio-rs/website",
+    "shortName": "tokio",
+    "url": "https://github.com/tokio-rs/website",
+    "branch": "master",
+    "sparsePaths": ["content"],
+    "docGlobs": ["content/*.md", "content/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "pnpm/pnpm.io",
+    "shortName": "pnpm",
+    "url": "https://github.com/pnpm/pnpm.io",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "webpack/webpack.js.org",
+    "shortName": "webpack",
+    "url": "https://github.com/webpack/webpack.js.org",
+    "branch": "main",
+    "sparsePaths": ["src/content"],
+    "docGlobs": ["src/content/*.md", "src/content/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "fastify/fastify",
+    "shortName": "fastify",
+    "url": "https://github.com/fastify/fastify",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "nestjs/docs.nestjs.com",
+    "shortName": "nestjs",
+    "url": "https://github.com/nestjs/docs.nestjs.com",
+    "branch": "master",
+    "sparsePaths": ["content"],
+    "docGlobs": ["content/*.md", "content/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "honojs/website",
+    "shortName": "hono",
+    "url": "https://github.com/honojs/website",
+    "branch": "main",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "reduxjs/redux",
+    "shortName": "redux",
+    "url": "https://github.com/reduxjs/redux",
+    "branch": "master",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "huggingface/accelerate",
+    "shortName": "accelerate",
+    "url": "https://github.com/huggingface/accelerate",
+    "branch": "main",
+    "sparsePaths": ["docs/source"],
+    "docGlobs": ["docs/source/*.md", "docs/source/*.mdx"],
+    "refreshIntervalMinutes": 240
+  },
+  {
+    "repo": "encode/httpx",
+    "shortName": "httpx",
+    "url": "https://github.com/encode/httpx",
+    "branch": "master",
+    "sparsePaths": ["docs"],
+    "docGlobs": ["docs/*.md", "docs/*.mdx"],
+    "refreshIntervalMinutes": 240
   }
 ]
