@@ -13,15 +13,15 @@ const QUESTION = 'How do I build Garnet from source?';
 export const demoScript: DemoBeat[] = [
   {
     id: 'intro',
-    caption: 'DocGuardian keeps engineering docs trustworthy as the code changes.',
-    cue: 'Set the scene: docs rot silently — we detect and fix them with evidence.',
+    caption: 'Copilot answers your docs. Obsidian stores them. DocGuardian governs them.',
+    cue: 'Hook: docs rot silently and contradict each other — we detect and fix them with evidence.',
     action: { kind: 'caption' },
     durationMs: 5000,
   },
   {
     id: 'graph',
-    caption: 'This is the live documentation graph — colour is health, size is importance.',
-    cue: 'Point at the red node: a real conflict between two build guides.',
+    caption: 'The live knowledge graph — colour is health, size is importance.',
+    cue: 'No human drew these links. The red node: build.md (.NET 8) vs a stale build-legacy.md (.NET 6).',
     action: {
       kind: 'highlight',
       nodeIds: ['garnet/docs/build.md', CONFLICT_DOC],
@@ -32,22 +32,22 @@ export const demoScript: DemoBeat[] = [
   },
   {
     id: 'select',
-    caption: 'This document is stale and conflicts with the canonical build guide.',
-    cue: 'We selected build-legacy.md — watch the panels open.',
+    caption: 'build-legacy.md is stale and conflicts with the canonical build guide.',
+    cue: 'Selected the red .NET 6 page — watch the evidence and analysis panels open.',
     action: { kind: 'selectDoc', docId: CONFLICT_DOC },
     durationMs: 5000,
   },
   {
     id: 'ask',
-    caption: 'Ask in plain English — answers are grounded in real document evidence.',
-    cue: 'It types the question, cites its sources, and blinks them on the graph.',
+    caption: 'Ask in plain English — a grounded answer with citations and confidence, not a guess.',
+    cue: 'Answers .NET 8 / dotnet build -c Release, cites build.md (~0.82), blinks sources on the graph. Evidence or silence.',
     action: { kind: 'chat', text: QUESTION },
     durationMs: 11000,
   },
   {
     id: 'trends',
     caption: 'Insights: stale, duplicate, broken-link and quality trends across the corpus.',
-    cue: 'Impact at a glance — detected vs. fixed over time.',
+    cue: 'Knowledge health you can manage — detected vs. fixed over time.',
     action: { kind: 'openInsights', tab: 'corpus' },
     durationMs: 7000,
   },
@@ -60,22 +60,22 @@ export const demoScript: DemoBeat[] = [
   },
   {
     id: 'propose',
-    caption: 'One click asks the agents to propose an evidence-backed fix.',
-    cue: 'The Curator drafts the change; the Guardian reviews it.',
+    caption: 'They patch the answer; we fix the source — one click proposes an evidence-backed fix.',
+    cue: "Curator drafts one canonical 'Building Garnet'; Guardian reviews it with evidence + a confidence score.",
     action: { kind: 'propose', docId: CONFLICT_DOC },
     durationMs: 7000,
   },
   {
     id: 'diff',
     caption: 'Every edit shows a diff, its sources, and a confidence score — evidence or silence.',
-    cue: 'No grounded citation, or low confidence → it routes to human review instead.',
+    cue: 'No grounded citation or low confidence → routes to human review, never auto-applied.',
     action: { kind: 'caption' },
     durationMs: 8000,
   },
   {
     id: 'approve',
-    caption: 'A human approves — the change is applied and full provenance is recorded.',
-    cue: 'Watch the metrics in the header tick up.',
+    caption: 'Nothing changes without a human — approve, and provenance + rollback are recorded.',
+    cue: 'Immutable audit: what changed, who approved, which agent, why. Watch the header metrics tick up.',
     action: {
       kind: 'approve',
       metricsDelta: {
@@ -89,8 +89,8 @@ export const demoScript: DemoBeat[] = [
   },
   {
     id: 'outro',
-    caption: 'Trustworthy docs: detected, fixed with evidence, and always human-approved.',
-    cue: 'Recap the value and hand back to questions.',
+    caption: 'Detected, fixed with evidence, human-approved — same answer inside Copilot via MCP.',
+    cue: 'Close: Copilot answers. Obsidian stores. DocGuardian governs.',
     action: { kind: 'caption' },
     durationMs: 6000,
   },
