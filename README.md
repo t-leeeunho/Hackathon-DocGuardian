@@ -86,6 +86,11 @@ Five layers. Data flows **up** (ingestion → UI); approvals flow **down**
 
 ### Architecture diagram
 
+![DocGuardian AI architecture — end-to-end flow from GitHub/URL/drop-off sources through processing, embeddings, pgvector storage, the Curator + Guardian agents, and governed delivery](docs/images/architecture.png)
+
+<details>
+<summary>Text version (same five layers, ASCII)</summary>
+
 ```text
 ┌───────────────────────────────────────────────────────────────┐
 │ 5 · FRONTEND     React + Vite · React Flow graph · chat ·      │
@@ -112,6 +117,8 @@ Five layers. Data flows **up** (ingestion → UI); approvals flow **down**
 │                   vscode})                                     │
 └───────────────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ### Stack
 
