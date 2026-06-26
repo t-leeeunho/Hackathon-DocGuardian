@@ -9,10 +9,9 @@ provenance, and rollback — all on an interactive knowledge graph.
 > <http://localhost:5173>, and click **Demo** — a one-click guided auto-pilot that
 > plays the whole story **offline on fixtures** (no Azure, no database, no network).
 
-<!--
-  📸 Judges love visuals — drop a screenshot or GIF here, then uncomment:
-  ![DocGuardian — knowledge graph, evidence-backed chat, and diff review](docs/demo.gif)
--->
+![DocGuardian AI — interactive knowledge graph, source tree, health counters, and evidence-backed chat](docs/images/main_page.png)
+
+*The DocGuardian workspace — a live knowledge graph of every ingested doc (color-coded by health), a source tree, stale/conflict/dupe counters, and an evidence-backed chat panel.*
 
 ---
 
@@ -52,6 +51,10 @@ the explicit *needs human review* path. Budget: **≤2 LLM calls per proposal**
 build conflict** between two pages, then proposes a reconciled fix — every claim
 backed by the chunk and commit it came from.
 
+![Evidence-backed answer with a cited source chunk, confidence score, and commit SHA](docs/images/search.png)
+
+*"How do I build Garnet from source?" — the answer cites the exact chunk (`build.md`, lines 8–14), its commit (`b4ad9f1`), and an 81% confidence score. No evidence, no answer.*
+
 ---
 
 ## Why not just Copilot, Obsidian, or Notion?
@@ -76,6 +79,10 @@ human approval, with full provenance and rollback.
 
 Five layers. Data flows **up** (ingestion → UI); approvals flow **down**
 (UI → governed writes).
+
+![Knowledge graph auto-clustered by source repository and color-coded by document health](docs/images/nodes.png)
+
+*The graph auto-clusters documents by source repository (Garnet, PowerToys, diffusers, jest, …) and colors every node by health: healthy, stale, conflict, or cited.*
 
 ### Architecture diagram
 
@@ -138,6 +145,10 @@ docs/      implementation-status.md (as-built, authoritative) + plans
 - **Extras:** an **MCP server** that exposes the corpus to Copilot CLI, **URL
   ingestion** (crawl a site → markdown → governed docs), and an AI **Librarian**
   that rewrites and re-files dropped-in docs while preserving the original.
+
+![Per-document insights: quality, completeness, broken links, and drift/risk scores](docs/images/document_insight.png)
+
+*Deterministic-first analysis per document — quality, readability, broken links, and drift/risk — so reviewers can see why a page needs attention.*
 
 ---
 
