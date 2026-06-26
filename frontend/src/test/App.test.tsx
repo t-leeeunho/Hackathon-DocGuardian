@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { fixtureGraph, fixtureChatAnswer, fixtureProposal, fixtureMetrics } from '../lib/fixtures';
 import { fixtureAnalysisReport, fixtureTrends, fixtureDocAnalysis } from '../lib/fixtures';
-import { demoScript } from '../lib/demoScript';
+import { demoScript, pickProblemTarget } from '../lib/demoScript';
 
 describe('fixtures', () => {
   it('fixture graph has nodes and edges', () => {
@@ -122,11 +122,44 @@ describe('guided demo script', () => {
   it('references only real fixture documents (no typos that would break the live run)', () => {
     for (const beat of demoScript) {
       const a = beat.action;
-      if (a.kind === 'selectDoc') expect(nodeIds.has(a.docId)).toBe(true);
+      // Spotlight beats may resolve their target dynamically (`pick`), in which
+      // case there is no static docId/nodeIds to validate here.
+      if (a.kind === 'selectDoc' && a.docId) expect(nodeIds.has(a.docId)).toBe(true);
       if (a.kind === 'propose' && a.docId) expect(nodeIds.has(a.docId)).toBe(true);
-      if (a.kind === 'highlight') for (const id of a.nodeIds) expect(nodeIds.has(id)).toBe(true);
+      if (a.kind === 'highlight' && a.nodeIds) {
+        for (const id of a.nodeIds) expect(nodeIds.has(id)).toBe(true);
+      }
       if (a.kind === 'chat') expect(a.text.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it('resolves a random problem doc from the live graph for the spotlight beats', () => {
+    const target = pickProblemTarget(fixtureGraph);
+    expect(target).not.toBeNull();
+    expect(nodeIds.has(target!.docId)).toBe(true);
+    for (const id of target!.partnerIds) expect(nodeIds.has(id)).toBe(true);
+    expect(target!.partnerIds).not.toContain(target!.docId);
+
+    // The picked node must be accessible (the permissions story must hold) and a
+    // genuine "problem" — red, an orphan, or sitting on a conflicts-with edge.
+    const node = fixtureGraph.nodes.find((n) => n.id === target!.docId)!;
+    expect(node.accessible).not.toBe(false);
+    const inConflict = fixtureGraph.edges.some(
+      (e) =>
+        e.type === 'conflicts-with' && (e.source === node.id || e.target === node.id),
+    );
+    expect(node.health === 'red' || node.orphan === true || inConflict).toBe(true);
+  });
+
+  it('drives the highlight + select spotlight beats off the dynamic pick', () => {
+    const graph = demoScript.find((b) => b.id === 'graph')!;
+    const select = demoScript.find((b) => b.id === 'select')!;
+    expect(graph.action.kind === 'highlight' && graph.action.pick).toBe('problem');
+    expect(select.action.kind === 'selectDoc' && select.action.pick).toBe('problem');
+  });
+
+  it('returns null when the graph has no nodes', () => {
+    expect(pickProblemTarget({ nodes: [], edges: [] })).toBeNull();
   });
 
   it('approves exactly once and bumps the metrics', () => {

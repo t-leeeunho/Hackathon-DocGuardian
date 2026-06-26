@@ -21,9 +21,15 @@ import { demoScript } from '../lib/demoScript';
 
 export type DemoAction =
   | { kind: 'caption' }
-  | { kind: 'selectDoc'; docId: string }
+  | { kind: 'selectDoc'; docId?: string; pick?: 'problem' }
   | { kind: 'chat'; text: string }
-  | { kind: 'highlight'; nodeIds: string[]; focus?: boolean; intensity?: number }
+  | {
+      kind: 'highlight';
+      nodeIds?: string[];
+      pick?: 'problem';
+      focus?: boolean;
+      intensity?: number;
+    }
   | { kind: 'clearHighlight' }
   | { kind: 'openInsights'; tab: 'corpus' | 'doc' }
   | { kind: 'closeInsights' }
@@ -41,6 +47,13 @@ export interface DemoBeat {
   durationMs?: number;
 }
 
+/** A document the demo spotlights, resolved from the live graph at run time. */
+export interface DemoTarget {
+  docId: string;
+  /** Conflict/duplicate partners to co-highlight (the other end of the edges). */
+  partnerIds: string[];
+}
+
 export interface DemoDriver {
   selectDoc: (docId: string) => void;
   highlight: (nodeIds: string[], opts?: { focus?: boolean; intensity?: number }) => void;
@@ -49,6 +62,8 @@ export interface DemoDriver {
   closeInsights: () => void;
   propose: (docId?: string) => void;
   approve: () => void;
+  /** Resolve a random "problem" doc from the live graph (for `pick` beats). */
+  pickProblemNode: () => DemoTarget | null;
 }
 
 /** A one-shot command for the chat panel to type + send (nonce makes replays fire). */
@@ -133,9 +148,22 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   const driverRef = useRef<Partial<DemoDriver>>({});
   const prevIndexRef = useRef<number>(-1);
   const nonceRef = useRef(0);
+  // The problem doc picked for this run, resolved once from the live graph and
+  // shared by the spotlight beats (highlight + select + propose) so they agree.
+  const pickedTargetRef = useRef<DemoTarget | null>(null);
 
   const registerDriver = useCallback((d: Partial<DemoDriver>) => {
     driverRef.current = { ...driverRef.current, ...d };
+  }, []);
+
+  // Resolve (and cache for the run) the random problem doc for `pick` beats.
+  // Never caches a null result, so a beat that fires before the graph has
+  // loaded simply does nothing and the next beat retries.
+  const resolveTarget = useCallback((): DemoTarget | null => {
+    if (pickedTargetRef.current) return pickedTargetRef.current;
+    const t = driverRef.current.pickProblemNode?.() ?? null;
+    if (t) pickedTargetRef.current = t;
+    return t;
   }, []);
 
   // Perform a beat's side effect. Heavy / one-shot actions (chat, propose,
@@ -146,12 +174,20 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     const d = driverRef.current;
     const a = beat.action;
     switch (a.kind) {
-      case 'selectDoc':
-        d.selectDoc?.(a.docId);
+      case 'selectDoc': {
+        const docId = a.pick === 'problem' ? resolveTarget()?.docId : a.docId;
+        if (docId) d.selectDoc?.(docId);
         break;
-      case 'highlight':
-        d.highlight?.(a.nodeIds, { focus: a.focus, intensity: a.intensity });
+      }
+      case 'highlight': {
+        let ids = a.nodeIds ?? [];
+        if (a.pick === 'problem') {
+          const t = resolveTarget();
+          ids = t ? [t.docId, ...t.partnerIds] : ids;
+        }
+        if (ids.length > 0) d.highlight?.(ids, { focus: a.focus, intensity: a.intensity });
         break;
+      }
       case 'clearHighlight':
         d.clearHighlight?.();
         break;
@@ -180,7 +216,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       default:
         break;
     }
-  }, []);
+  }, [resolveTarget]);
 
   // Run the active beat whenever the index changes (or the demo turns on).
   useEffect(() => {
@@ -207,6 +243,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
 
   const start = useCallback(() => {
     prevIndexRef.current = -1;
+    pickedTargetRef.current = null;
     setMetricsDelta({});
     setChatCommand(null);
     setCaptionsVisible(true);
@@ -222,6 +259,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     setChatCommand(null);
     setMetricsDelta({});
     prevIndexRef.current = -1;
+    pickedTargetRef.current = null;
     driverRef.current.clearHighlight?.();
     driverRef.current.closeInsights?.();
   }, []);
@@ -239,6 +277,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   }, []);
   const restart = useCallback(() => {
     prevIndexRef.current = -1;
+    pickedTargetRef.current = null;
     setMetricsDelta({});
     setChatCommand(null);
     setIndex(0);

@@ -1,14 +1,63 @@
-import type { DemoBeat } from '../hooks/useDemo';
+import type { DemoBeat, DemoTarget } from '../hooks/useDemo';
+import type { GraphDTO } from './types';
 
 /**
  * The guided-demo storyline. Edit freely — order, captions (which double as the
- * presenter's talking-point cues), durations, and target docs. Doc ids match the
- * offline fixtures in `lib/fixtures.ts`, so the whole run works with the backend
- * down and never hits Azure.
+ * presenter's talking-point cues), and durations. The spotlight beats (`graph`,
+ * `select`, `propose`) no longer hard-code a doc: they pick a random *problem*
+ * node from the live graph at run time (see `pickProblemTarget`), so the captions
+ * stay generic and the run works with the backend down and never hits Azure.
  */
 
-const CONFLICT_DOC = 'garnet/docs/build-legacy.md'; // red node: stale + conflicting
 const QUESTION = 'How do I build Garnet from source?';
+
+/** Edge types that signal a node sits in a conflict/duplicate relationship. */
+const CONFLICT_EDGE_TYPES = new Set<string>([
+  'conflicts-with',
+  'duplicate-of',
+  'deprecated-by',
+]);
+
+/**
+ * Pick a random *problem* document from the current graph — one that is flagged
+ * red, an orphan, or sitting on a `conflicts-with` edge — so the guided demo
+ * spotlights a genuinely stale/conflicting node instead of a single hard-coded
+ * one. Inaccessible nodes are skipped (the permissions story must hold). The
+ * chosen node's conflict/duplicate partners (the other end of those edges) are
+ * returned too, so the highlight can show the relationship. Returns `null` only
+ * when the graph has no usable nodes.
+ */
+export function pickProblemTarget(graph: GraphDTO): DemoTarget | null {
+  const nodes = graph.nodes ?? [];
+  const edges = graph.edges ?? [];
+  if (nodes.length === 0) return null;
+
+  const inConflict = new Set<string>();
+  for (const e of edges) {
+    if (e.type !== 'conflicts-with') continue;
+    inConflict.add(e.source);
+    inConflict.add(e.target);
+  }
+
+  const accessible = nodes.filter((n) => n.accessible !== false);
+  const candidates = accessible.filter(
+    (n) => n.health === 'red' || n.orphan === true || inConflict.has(n.id),
+  );
+  const pool = candidates.length > 0 ? candidates : accessible;
+  if (pool.length === 0) return null;
+
+  const chosen = pool[Math.floor(Math.random() * pool.length)];
+
+  const partners = new Set<string>();
+  for (const e of edges) {
+    if (!CONFLICT_EDGE_TYPES.has(e.type)) continue;
+    if (e.source === chosen.id) partners.add(e.target);
+    else if (e.target === chosen.id) partners.add(e.source);
+  }
+  partners.delete(chosen.id);
+
+  return { docId: chosen.id, partnerIds: [...partners] };
+}
 
 export const demoScript: DemoBeat[] = [
   {
@@ -21,10 +70,10 @@ export const demoScript: DemoBeat[] = [
   {
     id: 'graph',
     caption: 'The live knowledge graph — colour is health, size is importance.',
-    cue: 'No human drew these links. The red node: build.md (.NET 8) vs a stale build-legacy.md (.NET 6).',
+    cue: 'No human drew these links. DocGuardian flags two sources that disagree — a conflict it caught on its own.',
     action: {
       kind: 'highlight',
-      nodeIds: ['garnet/docs/build.md', CONFLICT_DOC],
+      pick: 'problem',
       focus: true,
       intensity: 0.95,
     },
@@ -32,9 +81,9 @@ export const demoScript: DemoBeat[] = [
   },
   {
     id: 'select',
-    caption: 'build-legacy.md is stale and conflicts with the canonical build guide.',
-    cue: 'Selected the red .NET 6 page — watch the evidence and analysis panels open.',
-    action: { kind: 'selectDoc', docId: CONFLICT_DOC },
+    caption: 'A flagged document — stale and conflicting with another source in the corpus.',
+    cue: 'Selected the flagged page — watch the evidence and analysis panels open.',
+    action: { kind: 'selectDoc', pick: 'problem' },
     durationMs: 5000,
   },
   {
@@ -54,15 +103,15 @@ export const demoScript: DemoBeat[] = [
   {
     id: 'doc-analysis',
     caption: 'Per-document analysis: low quality score, broken links, high staleness risk.',
-    cue: "That's exactly why this node is red.",
+    cue: "That's exactly why this node is flagged.",
     action: { kind: 'openInsights', tab: 'doc' },
     durationMs: 7000,
   },
   {
     id: 'propose',
     caption: 'They patch the answer; we fix the source — one click proposes an evidence-backed fix.',
-    cue: "Curator drafts one canonical 'Building Garnet'; Guardian reviews it with evidence + a confidence score.",
-    action: { kind: 'propose', docId: CONFLICT_DOC },
+    cue: 'Curator drafts one canonical version; Guardian reviews it with evidence + a confidence score.',
+    action: { kind: 'propose' },
     durationMs: 7000,
   },
   {

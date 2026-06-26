@@ -18,6 +18,7 @@ import { DemoControlBar } from './demo/DemoControlBar';
 import { DemoCaption } from './demo/DemoCaption';
 import { api, ApiError } from '../lib/api';
 import { fixtureProposal } from '../lib/fixtures';
+import { pickProblemTarget } from '../lib/demoScript';
 import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent, StreamEvent } from '../lib/types';
 import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3, Play, CheckCircle2 } from 'lucide-react';
 
@@ -162,8 +163,9 @@ export function AppShell() {
         if (target) handlePropose(target);
       },
       approve: () => handleApprove(),
+      pickProblemNode: () => pickProblemTarget(graphData),
     });
-  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handlePropose, handleApprove, selectedDocId]);
+  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handlePropose, handleApprove, selectedDocId, graphData]);
 
   // Live updates: refresh the graph when the backend reports an ingest finished,
   // a graph change, or an approved proposal (README §8B WS /stream).
