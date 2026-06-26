@@ -203,7 +203,7 @@ function LlmNotesCard({ notes }: { notes: LlmQualityNotes }) {
 // Main panel
 // --------------------------------------------------------------------------- //
 export function AnalysisPanel({ docId, node }: AnalysisPanelProps) {
-  const { data, loading, offline, error, llmLoading, llmRequested, explainWithAi } = useDocAnalysis(docId);
+  const { data, loading, offline, error, llmLoading, llmRequested, explainWithAi } = useDocAnalysis(docId, node);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '14px 16px' }}>

@@ -14,13 +14,17 @@ import { useHighlight } from '../hooks/useHighlight';
 import { useStream } from '../hooks/useStream';
 import { usePanelWidth } from '../hooks/usePanelWidth';
 import { useDemo } from '../hooks/useDemo';
+import { useTour } from '../hooks/useTour';
 import { DemoControlBar } from './demo/DemoControlBar';
 import { DemoCaption } from './demo/DemoCaption';
+import { DemoSlide } from './demo/DemoSlide';
+import { DemoSpotlight } from './demo/DemoSpotlight';
+import { WelcomeTour } from './tour/WelcomeTour';
 import { api, ApiError } from '../lib/api';
 import { fixtureProposal } from '../lib/fixtures';
 import { pickProblemTarget } from '../lib/demoScript';
 import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent, StreamEvent } from '../lib/types';
-import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3, Play, CheckCircle2 } from 'lucide-react';
+import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3, Play, CheckCircle2, HelpCircle } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -28,6 +32,7 @@ export function AppShell() {
   const { data: graphData, loading: graphLoading, offline, refresh: refreshGraph } = useGraph();
   const { highlight, emit: emitHighlight, clear: clearHighlight } = useHighlight();
   const demo = useDemo();
+  const tour = useTour();
 
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentResponse | null>(null);
@@ -158,14 +163,36 @@ export function AppShell() {
       },
       closeInsights: () => setShowInsights(false),
       propose: (docId) => {
+        // For the presentation the real /propose round-trip is slow, so show a
+        // representative (fixture) proposal with a short "reviewing" beat — it
+        // looks like the live agent output but is instant and reliable.
         setShowInsights(false);
-        const target = docId ?? selectedDocId;
-        if (target) handlePropose(target);
+        const target = docId ?? selectedDocId ?? fixtureProposal.targetDocId;
+        setShowProposal(true);
+        setApproved(false);
+        setProposal(null);
+        setProposalLoading(true);
+        window.setTimeout(() => {
+          setProposal({ ...fixtureProposal, targetDocId: target });
+          setProposalLoading(false);
+        }, 650);
       },
       approve: () => handleApprove(),
+      resetView: () => {
+        setShowInsights(false);
+        setShowProposal(false);
+        setProposal(null);
+        setProposalLoading(false);
+        setApproved(false);
+        setSelectedDoc(null);
+        setSelectedDocId(null);
+        setChatCollapsed(false);
+        clearHighlight();
+        setCitedDocIds([]);
+      },
       pickProblemNode: () => pickProblemTarget(graphData),
     });
-  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handlePropose, handleApprove, selectedDocId, graphData]);
+  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handleApprove, selectedDocId, graphData]);
 
   // Live updates: refresh the graph when the backend reports an ingest finished,
   // a graph change, or an approved proposal (README §8B WS /stream).
@@ -238,7 +265,9 @@ export function AppShell() {
         <div style={{ flex: 1 }} />
 
         {/* Metrics strip */}
-        <MetricsPanel compact />
+        <div data-tour="metrics" style={{ display: 'flex', alignItems: 'center' }}>
+          <MetricsPanel compact />
+        </div>
 
         {/* Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -260,6 +289,7 @@ export function AppShell() {
           {/* Insights toggle */}
           <button
             onClick={toggleInsights}
+            data-tour="insights"
             title="Toggle Insights dashboard"
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
@@ -293,7 +323,23 @@ export function AppShell() {
           )}
 
           {/* DropOff */}
-          <DropOffArea onIngested={handleIngested} />
+          <span data-tour="intake" style={{ display: 'flex', alignItems: 'center' }}>
+            <DropOffArea onIngested={handleIngested} />
+          </span>
+
+          {/* Help / re-run onboarding */}
+          <button
+            onClick={tour.openWelcome}
+            title="Show the welcome tour"
+            style={{
+              width: 30, height: 30, borderRadius: 7,
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(139,92,246,0.15)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#64748b', transition: 'all 0.2s',
+            }}
+          >
+            <HelpCircle size={14} />
+          </button>
 
           {/* Refresh */}
           <button
@@ -384,7 +430,7 @@ export function AppShell() {
         )}
 
         {/* Graph (center) */}
-        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div data-tour="graph" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           <DocGraph
             data={graphData}
             highlight={highlight}
@@ -523,7 +569,7 @@ export function AppShell() {
                 onDragStart={() => setResizing(true)}
                 onDragEnd={() => setResizing(false)}
               />
-              <div style={{ width: chat.width, borderLeft: '1px solid rgba(139,92,246,0.15)' }}>
+              <div data-tour="chat" style={{ width: chat.width, borderLeft: '1px solid rgba(139,92,246,0.15)' }}>
                 <ChatPanel
                   onHighlight={handleHighlight}
                   onCitationClick={handleCitationClick}
@@ -535,8 +581,13 @@ export function AppShell() {
       </div>
 
       {/* Guided demo overlays (inert unless active) */}
+      <DemoSpotlight />
       <DemoCaption />
+      <DemoSlide />
       <DemoControlBar />
+
+      {/* First-run onboarding (inert once dismissed) */}
+      <WelcomeTour />
 
       {toast && (
         <div

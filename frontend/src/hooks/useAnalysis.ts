@@ -1,7 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { AnalysisReport, DocAnalysis } from '../lib/types';
+import type { AnalysisReport, DocAnalysis, GraphNode } from '../lib/types';
 import { api } from '../lib/api';
-import { fixtureAnalysisReport, fixtureDocAnalysis } from '../lib/fixtures';
+import {
+  fixtureAnalysisReport,
+  fixtureDocAnalysis,
+  synthesizeDocAnalysis,
+} from '../lib/fixtures';
 
 /**
  * Insights data hooks. They mirror the offline-first fallback pattern of
@@ -62,7 +66,7 @@ interface UseDocAnalysisState {
  * re-fetches with `?llm=true` to populate the opt-in `LlmQualityNotes`; when the
  * backend is offline (or returns `llm: null`) it degrades gracefully.
  */
-export function useDocAnalysis(docId: string | null) {
+export function useDocAnalysis(docId: string | null, node?: GraphNode | null) {
   const [state, setState] = useState<UseDocAnalysisState>({
     data: null,
     loading: false,
@@ -71,6 +75,13 @@ export function useDocAnalysis(docId: string | null) {
     llmLoading: false,
     llmRequested: false,
   });
+
+  // Stable scalar signature of the node overlay so passing the object as a
+  // dependency can't trigger a re-fetch loop, while still re-running if the
+  // overlay fields actually change (e.g. the graph finishes loading).
+  const nodeKey = node
+    ? `${node.id}:${node.health}:${node.qualityScore ?? ''}:${node.brokenLinkCount ?? ''}:${node.orphan ?? ''}:${node.centrality ?? ''}`
+    : '';
 
   const load = useCallback(async () => {
     if (!docId) {
@@ -96,18 +107,21 @@ export function useDocAnalysis(docId: string | null) {
         llmRequested: false,
       });
     } catch {
-      // Demo fallback — keyed per-doc; not every doc has a fixture.
-      const fixture = fixtureDocAnalysis[docId] ?? null;
+      // Demo fallback. Prefer a hand-authored fixture; otherwise synthesize a
+      // complete, plausible analysis so the panel is always fully populated
+      // offline (the demo never shows an empty "no analysis" state).
+      const fixture = fixtureDocAnalysis[docId] ?? synthesizeDocAnalysis(docId, node);
       setState({
         data: fixture,
         loading: false,
-        error: fixture ? null : 'No analysis available for this document in demo mode.',
+        error: null,
         offline: true,
         llmLoading: false,
         llmRequested: false,
       });
     }
-  }, [docId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, nodeKey]);
 
   useEffect(() => {
     load();

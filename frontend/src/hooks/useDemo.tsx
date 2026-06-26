@@ -19,8 +19,57 @@ import { demoScript } from '../lib/demoScript';
  * `lib/demoScript.ts`; components register driver callbacks via `registerDriver`.
  */
 
+/**
+ * Optional "proof" artifact rendered on an act slide — a small, concrete example
+ * that *shows* the claim the bullets make (DocGuardian's whole thesis is evidence,
+ * not assertion). All data lives in the script and mirrors the demo fixtures, so
+ * the slide preview matches what the live beats then show. Purely presentational.
+ */
+export type SlideVisual =
+  | {
+      kind: 'conflict';
+      left: { title: string; badge: string; lines: string[]; tone: 'good' | 'bad' };
+      right: { title: string; badge: string; lines: string[]; tone: 'good' | 'bad' };
+      relation: string;
+    }
+  | {
+      kind: 'answer';
+      question: string;
+      answer: string;
+      confidence: number;
+      citations: { label: string; relevance: number }[];
+    }
+  | {
+      kind: 'diff';
+      before: string[];
+      after: string[];
+      reviewer: string;
+      confidence: number;
+      status: string;
+    }
+  | {
+      kind: 'stats';
+      items: { label: string; value: string; tone?: 'good' | 'neutral' }[];
+      footnote?: string;
+    }
+  | {
+      kind: 'permission';
+      docTitle: string;
+      badge: string;
+      note: string;
+      redactedLines?: number;
+    }
+  | {
+      kind: 'mcp';
+      client: string;
+      prompt: string;
+      answer: string;
+      citations: string[];
+    };
+
 export type DemoAction =
   | { kind: 'caption' }
+  | { kind: 'slide'; kicker?: string; title: string; bullets: string[]; visual?: SlideVisual }
   | { kind: 'selectDoc'; docId?: string; pick?: 'problem' }
   | { kind: 'chat'; text: string }
   | {
@@ -31,7 +80,7 @@ export type DemoAction =
       intensity?: number;
     }
   | { kind: 'clearHighlight' }
-  | { kind: 'openInsights'; tab: 'corpus' | 'doc' }
+  | { kind: 'openInsights'; tab: 'corpus' | 'doc'; pick?: 'problem' }
   | { kind: 'closeInsights' }
   | { kind: 'propose'; docId?: string }
   | { kind: 'approve'; metricsDelta?: Partial<MetricsDTO> };
@@ -45,6 +94,10 @@ export interface DemoBeat {
   action: DemoAction;
   /** Autoplay dwell before advancing to the next beat. */
   durationMs?: number;
+  /** UI region (data-tour anchor) to spotlight while this beat is active. */
+  spotlight?: string;
+  /** Act number (1-based) for the chapter progress indicator. */
+  act?: number;
 }
 
 /** A document the demo spotlights, resolved from the live graph at run time. */
@@ -62,6 +115,8 @@ export interface DemoDriver {
   closeInsights: () => void;
   propose: (docId?: string) => void;
   approve: () => void;
+  /** Close transient panels / clear selection — return to the main graph view. */
+  resetView: () => void;
   /** Resolve a random "problem" doc from the live graph (for `pick` beats). */
   pickProblemNode: () => DemoTarget | null;
 }
@@ -79,6 +134,8 @@ interface DemoContextValue {
   total: number;
   current: DemoBeat | null;
   next_: DemoBeat | null;
+  /** UI region to spotlight for the current beat (null during slides). */
+  spotlightAnchor: string | null;
   chatCommand: ChatCommand | null;
   metricsDelta: Partial<MetricsDTO>;
   start: () => void;
@@ -105,6 +162,7 @@ const defaultValue: DemoContextValue = {
   total: demoScript.length,
   current: null,
   next_: null,
+  spotlightAnchor: null,
   chatCommand: null,
   metricsDelta: {},
   start: noop,
@@ -174,6 +232,11 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     const d = driverRef.current;
     const a = beat.action;
     switch (a.kind) {
+      case 'slide':
+        // Entering an act slide returns the workspace to a clean main view so
+        // each act starts fresh (no panels left open from the previous act).
+        d.resetView?.();
+        break;
       case 'selectDoc': {
         const docId = a.pick === 'problem' ? resolveTarget()?.docId : a.docId;
         if (docId) d.selectDoc?.(docId);
@@ -192,6 +255,13 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         d.clearHighlight?.();
         break;
       case 'openInsights':
+        // Self-heal: make sure the spotlighted problem doc is selected before we
+        // open its analysis, even if the earlier select beat ran before the graph
+        // had loaded (e.g. ?demo=1 autostart or jumping straight to this beat).
+        if (a.pick === 'problem') {
+          const t = resolveTarget();
+          if (t) d.selectDoc?.(t.docId);
+        }
         d.openInsights?.(a.tab);
         break;
       case 'closeInsights':
@@ -249,7 +319,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     setCaptionsVisible(true);
     setIndex(0);
     setActive(true);
-    setPlaying(true);
+    setPlaying(false); // Next-driven: the presenter advances each beat.
   }, []);
 
   const exit = useCallback(() => {
@@ -260,19 +330,16 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     setMetricsDelta({});
     prevIndexRef.current = -1;
     pickedTargetRef.current = null;
-    driverRef.current.clearHighlight?.();
-    driverRef.current.closeInsights?.();
+    driverRef.current.resetView?.();
   }, []);
 
   const play = useCallback(() => setPlaying(true), []);
   const pause = useCallback(() => setPlaying(false), []);
   const toggle = useCallback(() => setPlaying((p) => !p), []);
   const next = useCallback(() => {
-    setPlaying(false);
     setIndex((i) => Math.min(i + 1, demoScript.length - 1));
   }, []);
   const prev = useCallback(() => {
-    setPlaying(false);
     setIndex((i) => Math.max(i - 1, 0));
   }, []);
   const restart = useCallback(() => {
@@ -281,7 +348,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     setMetricsDelta({});
     setChatCommand(null);
     setIndex(0);
-    setPlaying(true);
+    setPlaying(false);
   }, []);
   const goTo = useCallback((i: number) => {
     setPlaying(false);
@@ -332,13 +399,18 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     }
   }, [start]);
 
+  const currentBeat = demoScript[index] ?? null;
   const value: DemoContextValue = {
     active,
     playing,
     index,
     total: demoScript.length,
-    current: demoScript[index] ?? null,
+    current: currentBeat,
     next_: demoScript[index + 1] ?? null,
+    spotlightAnchor:
+      active && currentBeat && currentBeat.action.kind !== 'slide'
+        ? currentBeat.spotlight ?? null
+        : null,
     chatCommand,
     metricsDelta,
     start,

@@ -10,6 +10,7 @@ import type {
   ChatAnswer,
   DocAnalysis,
   GraphDTO,
+  GraphNode,
   MetricsDTO,
   TreeNode,
   TrendsDTO,
@@ -393,6 +394,97 @@ export const fixtureDocAnalysis: Record<string, DocAnalysis> = {
     llm: null,
   },
 };
+
+/**
+ * Build a complete, plausible {@link DocAnalysis} for ANY document so the demo's
+ * per-doc Insights panel is always fully populated offline — even for a doc that
+ * has no hand-authored entry in {@link fixtureDocAnalysis}. Values are derived
+ * deterministically from the docId (stable across renders) and, when available,
+ * anchored to the doc's graph-node overlay (health / quality / broken links /
+ * orphan / centrality) so the numbers agree with what the graph shows.
+ */
+export function synthesizeDocAnalysis(docId: string, node?: GraphNode | null): DocAnalysis {
+  // Stable 0–1 pseudo-randoms from the docId (FNV-1a).
+  const rand = (salt: string): number => {
+    let h = 2166136261;
+    const s = docId + salt;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 0xffffffff;
+  };
+  const r1 = rand('#1');
+  const r2 = rand('#2');
+  const r3 = rand('#3');
+
+  const health = node?.health ?? (r1 < 0.25 ? 'red' : r1 < 0.6 ? 'yellow' : 'green');
+  const bad = health === 'red';
+  const aging = health === 'yellow';
+
+  const qualityScore =
+    node?.qualityScore ??
+    (bad ? 0.3 + r1 * 0.14 : aging ? 0.55 + r1 * 0.16 : 0.78 + r1 * 0.16);
+  const brokenLinkCount = node?.brokenLinkCount ?? (bad ? 2 : aging ? 1 : 0);
+  const orphan = node?.orphan ?? r2 < 0.3;
+  const centrality = node?.centrality ?? (bad ? 0.05 + r2 * 0.12 : 0.25 + r2 * 0.55);
+  const ageDays = bad
+    ? 300 + Math.round(r3 * 160)
+    : aging
+      ? 90 + Math.round(r3 * 130)
+      : 8 + Math.round(r3 * 70);
+  const isStale = bad || ageDays > 240;
+  const riskScore = bad ? 0.72 + r2 * 0.2 : aging ? 0.4 + r2 * 0.2 : 0.08 + r2 * 0.16;
+  const placeholderCount = bad ? 1 + Math.round(r3 * 2) : 0;
+  const wordCount = bad ? 150 + Math.round(r1 * 160) : aging ? 420 + Math.round(r1 * 320) : 620 + Math.round(r1 * 500);
+  const completenessScore = Math.min(0.98, qualityScore + (r3 - 0.5) * 0.1);
+  const structureScore = Math.min(0.98, qualityScore + (r2 - 0.5) * 0.1);
+
+  const base = (docId.split('/').pop() || docId).replace(/\.[^.]+$/, '');
+  const brokenInternal = Array.from({ length: brokenLinkCount }, (_, i) =>
+    i === 0 ? `./${base}-legacy.md` : `../archive/${base}-v${i}.md`,
+  );
+
+  const qualityIssues: string[] = [];
+  if (placeholderCount > 0) qualityIssues.push(`Contains ${placeholderCount} TODO/TBD placeholder${placeholderCount > 1 ? 's' : ''}`);
+  if (structureScore < 0.62) qualityIssues.push('Missing "Usage" and "Troubleshooting" sections');
+  if (qualityScore < 0.5) qualityIssues.push(`Thin content (${wordCount} words)`);
+  if (qualityIssues.length === 0 && aging) qualityIssues.push('Could use more code examples');
+
+  const riskReasons: string[] = [];
+  if (isStale) riskReasons.push(`Unverified for ${ageDays} days`);
+  if (bad) riskReasons.push('Flagged stale/conflicting by DocGuardian');
+  if (orphan) riskReasons.push('Orphaned — no inbound references');
+
+  return {
+    docId,
+    quality: {
+      qualityScore,
+      readability: bad ? 40 + r1 * 12 : aging ? 52 + r1 * 12 : 62 + r1 * 10,
+      gradeLevel: bad ? 12 + r2 * 2.5 : aging ? 9.5 + r2 * 2 : 7.5 + r2 * 1.5,
+      completenessScore,
+      structureScore,
+      wordCount,
+      placeholderCount,
+      issues: qualityIssues,
+    },
+    links: {
+      brokenInternal,
+      brokenLinkCount,
+      externalCount: Math.round(r3 * 4),
+      orphan,
+      deadEnd: orphan && r1 < 0.5,
+    },
+    drift: {
+      ageDays,
+      isStale,
+      riskScore,
+      riskReasons,
+    },
+    centrality,
+    llm: null,
+  };
+}
 
 export const fixtureTrends: TrendsDTO = {
   // ~2 weeks of daily snapshots: detection ramps up first, then fixes catch up

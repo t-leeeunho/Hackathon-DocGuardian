@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import { fixtureGraph, fixtureChatAnswer, fixtureProposal, fixtureMetrics } from '../lib/fixtures';
 import { fixtureAnalysisReport, fixtureTrends, fixtureDocAnalysis } from '../lib/fixtures';
 import { demoScript, pickProblemTarget } from '../lib/demoScript';
+import { SlideVisual } from '../components/demo/SlideVisual';
 
 describe('fixtures', () => {
   it('fixture graph has nodes and edges', () => {
@@ -154,8 +156,14 @@ describe('guided demo script', () => {
   it('drives the highlight + select spotlight beats off the dynamic pick', () => {
     const graph = demoScript.find((b) => b.id === 'graph')!;
     const select = demoScript.find((b) => b.id === 'select')!;
+    const docAnalysis = demoScript.find((b) => b.id === 'doc-analysis')!;
     expect(graph.action.kind === 'highlight' && graph.action.pick).toBe('problem');
     expect(select.action.kind === 'selectDoc' && select.action.pick).toBe('problem');
+    // The doc-analysis beat re-selects the problem doc so its analysis always
+    // shows, even if the earlier select beat ran before the graph had loaded.
+    expect(docAnalysis.action.kind === 'openInsights' && docAnalysis.action.pick).toBe(
+      'problem',
+    );
   });
 
   it('returns null when the graph has no nodes', () => {
@@ -170,5 +178,122 @@ describe('guided demo script', () => {
       expect(a.metricsDelta).toBeDefined();
       expect(Object.keys(a.metricsDelta ?? {}).length).toBeGreaterThan(0);
     }
+  });
+
+  it('is structured as four acts, each opened by a presentation slide', () => {
+    const acts = [1, 2, 3, 4];
+    for (const act of acts) {
+      const beats = demoScript.filter((b) => b.act === act);
+      expect(beats.length).toBeGreaterThan(0);
+      // The first beat of every act is a full-screen slide (mini-presentation).
+      expect(beats[0].action.kind).toBe('slide');
+    }
+    // Every beat belongs to one of the four acts.
+    for (const beat of demoScript) {
+      expect(acts).toContain(beat.act);
+    }
+  });
+
+  it('every slide has a headline and at least two bullets', () => {
+    const slides = demoScript.filter((b) => b.action.kind === 'slide');
+    expect(slides.length).toBeGreaterThanOrEqual(4);
+    for (const s of slides) {
+      if (s.action.kind === 'slide') {
+        expect(s.action.title.length).toBeGreaterThan(0);
+        expect(s.action.bullets.length).toBeGreaterThanOrEqual(2);
+      }
+    }
+  });
+
+  it('only spotlights known functional regions', () => {
+    const known = new Set(['graph', 'chat', 'intake', 'insights', 'metrics']);
+    for (const beat of demoScript) {
+      if (beat.spotlight) expect(known.has(beat.spotlight)).toBe(true);
+    }
+  });
+
+  it('starts and ends on a slide so the presentation book-ends cleanly', () => {
+    expect(demoScript[0].action.kind).toBe('slide');
+    expect(demoScript[demoScript.length - 1].action.kind).toBe('slide');
+  });
+});
+
+describe('slide proof visuals', () => {
+  function slideVisual(id: string) {
+    const beat = demoScript.find((b) => b.id === id);
+    expect(beat, `beat ${id} exists`).toBeDefined();
+    if (beat!.action.kind !== 'slide') throw new Error(`${id} is not a slide`);
+    return beat!.action.visual;
+  }
+
+  it('each act slide carries a concrete "show, don\'t tell" proof visual', () => {
+    expect(slideVisual('act1-slide')?.kind).toBe('conflict');
+    expect(slideVisual('act2-slide')?.kind).toBe('answer');
+    expect(slideVisual('act3-slide')?.kind).toBe('diff');
+    expect(slideVisual('act4-slide')?.kind).toBe('permission');
+    expect(slideVisual('mcp')?.kind).toBe('mcp');
+    expect(slideVisual('outro')?.kind).toBe('stats');
+  });
+
+  it('every slide beat now backs its claim with a proof visual', () => {
+    for (const beat of demoScript) {
+      if (beat.action.kind === 'slide') {
+        expect(beat.action.visual, `slide ${beat.id} has a visual`).toBeDefined();
+      }
+    }
+  });
+
+  it('visual evidence matches the demo fixtures (slide preview == live demo)', () => {
+    const answer = slideVisual('act2-slide');
+    expect(answer?.kind).toBe('answer');
+    if (answer?.kind === 'answer') {
+      expect(answer.confidence).toBe(fixtureChatAnswer.confidence);
+      const fixtureRel = fixtureChatAnswer.citations.map((c) => c.relevance);
+      for (const c of answer.citations) expect(fixtureRel).toContain(c.relevance);
+    }
+    const diff = slideVisual('act3-slide');
+    expect(diff?.kind).toBe('diff');
+    if (diff?.kind === 'diff') {
+      expect(diff.confidence).toBe(fixtureProposal.confidence);
+    }
+  });
+
+  it('renders the Act 1 conflict (the real .NET 8 vs .NET 6 disagreement)', () => {
+    render(<SlideVisual visual={slideVisual('act1-slide')!} />);
+    expect(screen.getByText(/conflicts-with/)).toBeInTheDocument();
+    expect(screen.getByText(/\.NET 8 SDK/)).toBeInTheDocument();
+    expect(screen.getByText(/\.NET 6 SDK/)).toBeInTheDocument();
+  });
+
+  it('renders the Act 2 grounded answer with citations + confidence', () => {
+    render(<SlideVisual visual={slideVisual('act2-slide')!} />);
+    expect(screen.getByText('build.md')).toBeInTheDocument();
+    expect(screen.getByText(/confidence 82%/)).toBeInTheDocument();
+  });
+
+  it('renders the Act 3 diff under Guardian review, awaiting approval', () => {
+    render(<SlideVisual visual={slideVisual('act3-slide')!} />);
+    expect(screen.getByText(/Guardian/)).toBeInTheDocument();
+    expect(screen.getByText('Awaiting human approval')).toBeInTheDocument();
+  });
+
+  it('renders the closing scoreboard of what the demo just fixed', () => {
+    render(<SlideVisual visual={slideVisual('outro')!} />);
+    expect(screen.getByText('+2')).toBeInTheDocument();
+    expect(screen.getByText('Broken links fixed')).toBeInTheDocument();
+  });
+
+  it('renders the Act 4 permission proof — a locked node whose content is never shown', () => {
+    render(<SlideVisual visual={slideVisual('act4-slide')!} />);
+    expect(screen.getByText('security/prod-oncall-secrets.md')).toBeInTheDocument();
+    expect(screen.getByText('No access')).toBeInTheDocument();
+    expect(screen.getByText(/never reaches the model/)).toBeInTheDocument();
+  });
+
+  it('renders the MCP proof — the same cited answer inside Copilot', () => {
+    render(<SlideVisual visual={slideVisual('mcp')!} />);
+    expect(screen.getByText('@docguardian')).toBeInTheDocument();
+    expect(screen.getByText(/via DocGuardian MCP/)).toBeInTheDocument();
+    expect(screen.getByText('build.md')).toBeInTheDocument();
   });
 });
