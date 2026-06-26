@@ -146,6 +146,10 @@ docs/      implementation-status.md (as-built, authoritative) + plans
   ingestion** (crawl a site → markdown → governed docs), and an AI **Librarian**
   that rewrites and re-files dropped-in docs while preserving the original.
 
+![DocGuardian MCP server answering a query from inside Copilot CLI, returning evidence](docs/images/mcp.png)
+
+*The same corpus is available to coding agents over **MCP**: here Copilot CLI calls `docguardian-search_docs` and gets back ranked chunks with source, heading, line range, commit, and score.*
+
 ![Per-document insights: quality, completeness, broken links, and drift/risk scores](docs/images/document_insight.png)
 
 *Deterministic-first analysis per document — quality, readability, broken links, and drift/risk — so reviewers can see why a page needs attention.*
