@@ -223,7 +223,13 @@ def _collect_edge_signals(edge_rows: list[dict]) -> dict[str, dict]:
 def get_governed_graph(
     namespace: str | None = None, principal: Principal | None = None
 ) -> dict:
-    """ACL-filtered graph with derived health/importance (README §8B GraphDTO)."""
+    """ACL-filtered graph with derived health/importance (README §8B GraphDTO).
+
+    Additive analysis overlay (qualityScore, brokenLinkCount, orphan,
+    centrality) is computed in-process from batch-loaded data — no N+1 DB
+    calls.  Any overlay failure degrades to ``None`` fields without breaking
+    the node list.
+    """
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             if namespace:
@@ -239,8 +245,122 @@ def get_governed_graph(
             docs = cur.fetchall()
             cur.execute("SELECT from_doc, to_doc, type, weight FROM edges")
             edge_rows = cur.fetchall()
+            # Batch-load chunk text for quality/link overlay (one extra query, not N+1)
+            if namespace:
+                cur.execute(
+                    "SELECT doc_id, text, heading_path FROM chunks "
+                    "WHERE doc_id LIKE %s ORDER BY doc_id, ordinal",
+                    (f"{namespace}/%",),
+                )
+            else:
+                cur.execute(
+                    "SELECT doc_id, text, heading_path FROM chunks ORDER BY doc_id, ordinal"
+                )
+            chunk_rows = cur.fetchall()
 
     edge_sig = _collect_edge_signals(edge_rows)
+
+    # ── Analysis overlay (best-effort; any exception degrades to None fields) ──
+    _ranks: dict[str, float] = {}
+    _quality_scores: dict[str, float] = {}
+    _broken_counts: dict[str, int] = {}
+    _orphan_flags: dict[str, bool] = {}
+
+    try:
+        from app.analysis.graph_structure import pagerank  # noqa: PLC0415
+
+        _all_ids: set[str] = {d["doc_id"] for d in docs}
+
+        # PageRank computed ONCE from already-loaded edges — no extra DB query.
+        _ref_edges = [
+            (e["from_doc"], e["to_doc"])
+            for e in edge_rows
+            if e["type"] == "references"
+            and e["from_doc"] in _all_ids
+            and e["to_doc"] in _all_ids
+        ]
+        _ranks = pagerank(_ref_edges, _all_ids)
+
+        # Orphan flag: docs with zero inbound *references* edges.
+        _ref_inbound: dict[str, int] = {}
+        _ref_outbound: dict[str, int] = {}
+        for e in edge_rows:
+            if e["type"] == "references":
+                _ref_inbound[e["to_doc"]] = _ref_inbound.get(e["to_doc"], 0) + 1
+                _ref_outbound[e["from_doc"]] = _ref_outbound.get(e["from_doc"], 0) + 1
+        for d in docs:
+            _orphan_flags[d["doc_id"]] = _ref_inbound.get(d["doc_id"], 0) == 0
+
+        # Quality + broken-link overlay from batch-loaded chunks — pure Python.
+        try:
+            from app.analysis.quality import analyze_quality  # noqa: PLC0415
+            from app.analysis.links import analyze_links  # noqa: PLC0415
+            from app.analysis.signals import DocAnalysisSignals, CorpusSignals  # noqa: PLC0415
+            from app.processing.processor import _LINK_RE, _resolve_link  # noqa: PLC0415
+
+            _chunks_by_doc: dict[str, list] = {}
+            for c in chunk_rows:
+                _chunks_by_doc.setdefault(c["doc_id"], []).append(c)
+
+            _corpus = CorpusSignals(
+                doc_ids=_all_ids,
+                edges=[(e["from_doc"], e["to_doc"], e["type"]) for e in edge_rows],
+            )
+
+            for d in docs:
+                try:
+                    did = d["doc_id"]
+                    dc = _chunks_by_doc.get(did, [])
+                    content = "\n".join(c["text"] for c in dc) if dc else ""
+                    h_paths = [list(c["heading_path"]) for c in dc if c.get("heading_path")]
+
+                    # Inline link scan (mirrors signals._scan_links; avoids private import)
+                    int_tgts: list[str] = []
+                    ext_urls: list[str] = []
+                    seen_i: set[str] = set()
+                    seen_e: set[str] = set()
+                    for m in _LINK_RE.finditer(content):
+                        tgt = m.group(2)
+                        if tgt.startswith(("http://", "https://")):
+                            if tgt not in seen_e:
+                                ext_urls.append(tgt)
+                                seen_e.add(tgt)
+                        else:
+                            resolved = _resolve_link(did, tgt)
+                            if resolved and resolved not in seen_i:
+                                int_tgts.append(resolved)
+                                seen_i.add(resolved)
+
+                    _sig = DocAnalysisSignals(
+                        doc_id=did,
+                        repo=d.get("repo", ""),
+                        path=d.get("path", ""),
+                        content=content,
+                        heading_paths=h_paths,
+                        commit_sha=d.get("commit_sha"),
+                        commit_date=None,
+                        last_verified_sha=d.get("last_verified_sha"),
+                        has_conflict_edge=edge_sig.get(did, {}).get("conflict", False),
+                        has_duplicate_edge=edge_sig.get(did, {}).get("duplicate", False),
+                        is_deprecated=edge_sig.get(did, {}).get("deprecated", False),
+                        inbound_refs=_ref_inbound.get(did, 0),
+                        outbound_refs=_ref_outbound.get(did, 0),
+                        internal_link_targets=int_tgts,
+                        external_links=ext_urls,
+                    )
+                    q = analyze_quality(_sig)
+                    _quality_scores[did] = q.quality_score
+                    lnk = analyze_links(_sig, _corpus)
+                    _broken_counts[did] = lnk.broken_link_count
+                except Exception:  # noqa: BLE001
+                    pass  # per-doc failure: that doc's overlay stays None
+        except Exception:  # noqa: BLE001
+            pass  # quality/link overlay unavailable
+
+    except Exception:  # noqa: BLE001
+        pass  # PageRank unavailable — all overlay fields stay None
+    # ── End of analysis overlay ──────────────────────────────────────────────
+
     nodes = []
     visible: set[str] = set()
     for d in docs:
@@ -265,6 +385,11 @@ def get_governed_graph(
                 "size": derive_importance(signals),
                 "accessible": True,
                 "repo": d["repo"],
+                # Analysis overlay fields (additive optional; None when unavailable)
+                "qualityScore": _quality_scores.get(d["doc_id"]),
+                "brokenLinkCount": _broken_counts.get(d["doc_id"]),
+                "orphan": _orphan_flags.get(d["doc_id"]),
+                "centrality": _ranks.get(d["doc_id"]),
             }
         )
 
@@ -337,3 +462,49 @@ def get_document_meta(doc_id: str) -> Optional[dict]:
 def get_metrics_dto() -> dict:
     """Gather raw counts and reduce them to a camelCase MetricsDTO."""
     return compute_metrics(get_metric_signals())
+
+
+# --------------------------------------------------------------------------- #
+# Bulk proposal reader (additive — for analysis/trend computation)
+# --------------------------------------------------------------------------- #
+def list_proposals(namespace: str | None = None) -> list[dict]:
+    """Return all proposals as lightweight camelCase dicts.
+
+    Used by ``app.analysis.trends.compute_trends``; does not modify any
+    existing function.  Returns rows ordered by ``created_at ASC`` so the
+    caller sees proposals in chronological sequence.
+
+    Parameters
+    ----------
+    namespace:
+        When supplied, filters to proposals whose ``doc_id`` starts with
+        ``"<namespace>/"`` (same convention as ``list_doc_ids``).
+    """
+    sql = (
+        "SELECT proposal_id, doc_id, action, status, confidence, payload, "
+        "created_at, applied_at FROM proposals"
+    )
+    params: dict = {}
+    if namespace:
+        sql += " WHERE doc_id LIKE %(ns)s"
+        params["ns"] = f"{namespace}/%"
+    sql += " ORDER BY created_at ASC"
+
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+    return [
+        {
+            "proposalId": r["proposal_id"],
+            "docId": r["doc_id"],
+            "action": r["action"],
+            "status": r["status"],
+            "confidence": r["confidence"],
+            "payload": r["payload"] or {},
+            "createdAt": r["created_at"].isoformat() if r["created_at"] else None,
+            "appliedAt": r["applied_at"].isoformat() if r["applied_at"] else None,
+        }
+        for r in rows
+    ]

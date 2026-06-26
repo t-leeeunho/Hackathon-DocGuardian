@@ -1,7 +1,19 @@
 import { useState, useEffect } from 'react';
 import { BarChart2, CheckCircle, AlertTriangle, Link, Shield, Zap } from 'lucide-react';
-import { fixtureMetrics } from '../../lib/fixtures';
+import { useMetrics } from '../../hooks/useMetrics';
+import { useDemo } from '../../hooks/useDemo';
 import type { MetricsDTO } from '../../lib/types';
+
+/** Add an optional demo "metrics delta" (the guided-demo approval bump) on top of
+ *  the live/fixture metrics so the header counters animate up during the demo. */
+function applyMetricsDelta(base: MetricsDTO, delta: Partial<MetricsDTO>): MetricsDTO {
+  if (!delta || Object.keys(delta).length === 0) return base;
+  const out = { ...base } as Record<string, number>;
+  for (const k of Object.keys(delta)) {
+    out[k] = (out[k] ?? 0) + ((delta as Record<string, number>)[k] ?? 0);
+  }
+  return out as unknown as MetricsDTO;
+}
 
 function AnimatedNumber({ target }: { target: number }) {
   const [value, setValue] = useState(0);
@@ -80,7 +92,9 @@ interface MetricsPanelProps {
 }
 
 export function MetricsPanel({ compact = false }: MetricsPanelProps) {
-  const metrics: MetricsDTO = fixtureMetrics;
+  const { data, offline } = useMetrics();
+  const { metricsDelta } = useDemo();
+  const metrics = applyMetricsDelta(data, metricsDelta);
 
   if (compact) {
     // Inline header strip
@@ -106,39 +120,58 @@ export function MetricsPanel({ compact = false }: MetricsPanelProps) {
             <span style={{ fontSize: 10, color: '#4b5563' }}>{item.label}</span>
           </div>
         ))}
-        <span style={{
-          padding: '1px 5px', borderRadius: 3,
-          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)',
-          color: '#78716c', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-        }}>
-          demo
-        </span>
+        {offline && (
+          <span style={{
+            padding: '1px 5px', borderRadius: 3,
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)',
+            color: '#78716c', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>
+            demo
+          </span>
+        )}
       </div>
     );
   }
 
   return (
     <div style={{ padding: '10px 16px 12px' }}>
-      {/* Demo label */}
+      {/* Header + live/demo source badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <BarChart2 size={13} color="#64748b" />
         <span style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
           Governance Metrics
         </span>
-        <span style={{
-          marginLeft: 'auto',
-          padding: '1px 7px',
-          borderRadius: 3,
-          background: 'rgba(245,158,11,0.1)',
-          border: '1px solid rgba(245,158,11,0.2)',
-          color: '#fbbf24',
-          fontSize: 9,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-        }}>
-          Demo data
-        </span>
+        {offline ? (
+          <span style={{
+            marginLeft: 'auto',
+            padding: '1px 7px',
+            borderRadius: 3,
+            background: 'rgba(245,158,11,0.1)',
+            border: '1px solid rgba(245,158,11,0.2)',
+            color: '#fbbf24',
+            fontSize: 9,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+          }}>
+            Demo data
+          </span>
+        ) : (
+          <span style={{
+            marginLeft: 'auto',
+            padding: '1px 7px',
+            borderRadius: 3,
+            background: 'rgba(34,211,160,0.1)',
+            border: '1px solid rgba(34,211,160,0.2)',
+            color: '#22d3a0',
+            fontSize: 9,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+          }}>
+            Live
+          </span>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

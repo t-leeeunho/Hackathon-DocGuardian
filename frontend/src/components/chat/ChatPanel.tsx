@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Send, AlertTriangle, MessageSquare, Zap } from 'lucide-react';
-import { CitationChip } from './CitationChip';
+import { Send, AlertTriangle, MessageSquare, Zap, Sparkles, Brain, BookText } from 'lucide-react';
+import { ReferenceCard } from './ReferenceCard';
 import { ScopeToggle } from './ScopeToggle';
 import { useChat } from '../../hooks/useChat';
-import type { GraphHighlightEvent, Citation } from '../../lib/types';
+import { useDemo } from '../../hooks/useDemo';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
+import type { GraphHighlightEvent, Citation, ChatAnswer } from '../../lib/types';
 
 interface ChatPanelProps {
   onHighlight: (event: GraphHighlightEvent) => void;
@@ -62,15 +64,61 @@ function LoadingSkeleton() {
 
 export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPanelProps) {
   const [input, setInput] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [openTraces, setOpenTraces] = useState<Record<string, boolean>>({});
+  const questionRef = useRef<HTMLDivElement>(null);
   const { messages, scope, setScope, loading, sendMessage, citationHighlight } = useChat(
     onHighlight,
     defaultRepo,
   );
 
+  // The id of the most recent user message — the anchor we scroll to.
+  const lastUserId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages[i].id;
+    }
+    return null;
+  })();
+
+  // When a new question is asked, scroll it to the TOP of the chat so the answer
+  // reads from its beginning (rather than jumping to the very bottom).
+  const anchoredIdRef = useRef<string | null>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!lastUserId || lastUserId === anchoredIdRef.current) return;
+    anchoredIdRef.current = lastUserId;
+    requestAnimationFrame(() => {
+      questionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [lastUserId]);
+
+  // Guided demo: when a chat beat fires, type the question out then auto-send.
+  const demo = useDemo();
+  const reduce = useReducedMotion();
+  const sendRef = useRef(sendMessage);
+  sendRef.current = sendMessage;
+  const lastDemoNonce = useRef(0);
+
+  useEffect(() => {
+    const cmd = demo.chatCommand;
+    if (!demo.active || !cmd || cmd.nonce === lastDemoNonce.current) return;
+    lastDemoNonce.current = cmd.nonce;
+    const text = cmd.text;
+    setInput('');
+    if (reduce) {
+      setInput(text);
+      const t = window.setTimeout(() => { setInput(''); sendRef.current(text); }, 300);
+      return () => window.clearTimeout(t);
+    }
+    let i = 0;
+    const typer = window.setInterval(() => {
+      i += 1;
+      setInput(text.slice(0, i));
+      if (i >= text.length) {
+        window.clearInterval(typer);
+        window.setTimeout(() => { setInput(''); sendRef.current(text); }, 380);
+      }
+    }, 42);
+    return () => window.clearInterval(typer);
+  }, [demo.chatCommand, demo.active, reduce]);
 
   const handleSend = () => {
     const q = input.trim();
@@ -89,6 +137,23 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
   const handleCitationClick = (citation: Citation) => {
     citationHighlight(citation);
     onCitationClick?.(citation);
+  };
+
+  // Re-blink the cited nodes AND fly the camera there (only on Show traces).
+  const replayTraces = (answer: ChatAnswer) => {
+    if (!answer.citations.length) return;
+    onHighlight({
+      reason: 'chat-evidence',
+      nodeIds: [...new Set(answer.citations.map((c) => c.docId))],
+      intensity: Math.max(...answer.citations.map((c) => c.relevance)),
+      ttlMs: 8000,
+      focus: true,
+    });
+  };
+
+  const toggleTraces = (id: string, answer: ChatAnswer) => {
+    setOpenTraces((prev) => ({ ...prev, [id]: !prev[id] }));
+    replayTraces(answer); // always re-blink when clicked
   };
 
   return (
@@ -173,6 +238,7 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
         {messages.map(msg => (
           <div
             key={msg.id}
+            ref={msg.id === lastUserId ? questionRef : undefined}
             className="animate-fade-in-up"
             style={{
               display: 'flex',
@@ -280,25 +346,61 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
                           {msg.answer.scope}
                         </span>
                       )}
+                      {msg.answer.citations.length > 0 && (
+                        <button
+                          onClick={() => toggleTraces(msg.id, msg.answer!)}
+                          style={{
+                            marginLeft: 'auto',
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+                            fontSize: 11, fontWeight: 600, color: '#c4b5fd',
+                            background: 'rgba(139,92,246,0.14)',
+                            border: '1px solid rgba(139,92,246,0.3)',
+                          }}
+                        >
+                          <Sparkles size={11} />
+                          {openTraces[msg.id] ? 'Hide traces' : 'Show traces'}
+                        </button>
+                      )}
                     </div>
 
-                    {/* Citations */}
+                    {/* Reasoning trace ("how I derived this") */}
+                    {openTraces[msg.id] && msg.answer.reasoning && (
+                      <div
+                        style={{
+                          display: 'flex', gap: 8, alignItems: 'flex-start',
+                          padding: '8px 10px', borderRadius: 8,
+                          background: 'rgba(139,92,246,0.06)',
+                          border: '1px solid rgba(139,92,246,0.18)',
+                          fontSize: 12, color: '#c4b5fd', lineHeight: 1.55,
+                        }}
+                      >
+                        <Brain size={13} style={{ flexShrink: 0, marginTop: 1, color: '#a78bfa' }} />
+                        <span><strong style={{ color: '#a78bfa' }}>Reasoning:</strong> {msg.answer.reasoning}</span>
+                      </div>
+                    )}
+
+                    {/* References */}
                     {msg.answer.citations.length > 0 && (
                       <div>
                         <div
                           style={{
                             fontSize: 10,
                             color: '#64748b',
-                            marginBottom: 6,
+                            marginBottom: 8,
                             textTransform: 'uppercase',
                             letterSpacing: '0.05em',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
                           }}
                         >
-                          Evidence sources
+                          <BookText size={11} color="#8b5cf6" />
+                          References ({msg.answer.citations.length})
                         </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                           {msg.answer.citations.map((c, i) => (
-                            <CitationChip
+                            <ReferenceCard
                               key={c.chunkId ?? `${c.docId}-${i}`}
                               citation={c}
                               index={i}
@@ -310,12 +412,25 @@ export function ChatPanel({ onHighlight, onCitationClick, defaultRepo }: ChatPan
                       </div>
                     )}
                   </div>
+                ) : msg.content ? (
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      background: 'rgba(255,255,255,0.03)',
+                      borderRadius: '2px 12px 12px 12px',
+                      border: '1px solid rgba(139,92,246,0.1)',
+                      fontSize: 13,
+                      lineHeight: 1.55,
+                      color: '#cbd5e1',
+                    }}
+                  >
+                    {msg.content}
+                  </div>
                 ) : null}
               </div>
             )}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}

@@ -6,22 +6,26 @@
  */
 import type {
   AgentProposal,
+  AnalysisReport,
   ChatAnswer,
+  DocAnalysis,
   GraphDTO,
+  GraphNode,
   MetricsDTO,
   TreeNode,
+  TrendsDTO,
 } from './types';
 
 export const fixtureGraph: GraphDTO = {
   nodes: [
-    { id: 'garnet/README.md', label: 'README.md', health: 'green', size: 0.9, accessible: true, repo: 'garnet' },
-    { id: 'garnet/docs/build.md', label: 'build.md', health: 'yellow', size: 0.6, accessible: true, repo: 'garnet' },
-    { id: 'garnet/docs/build-legacy.md', label: 'build-legacy.md', health: 'red', size: 0.5, accessible: true, repo: 'garnet' },
-    { id: 'playwright/docs/intro.md', label: 'intro.md', health: 'green', size: 0.8, accessible: true, repo: 'playwright' },
-    { id: 'playwright/docs/codegen.md', label: 'codegen.md', health: 'green', size: 0.55, accessible: true, repo: 'playwright' },
-    { id: 'onnxruntime/docs/install.md', label: 'install.md', health: 'yellow', size: 0.7, accessible: true, repo: 'onnxruntime' },
-    { id: 'onnxruntime/docs/install-old.md', label: 'install-old.md', health: 'gray', size: 0.4, accessible: false, repo: 'onnxruntime' },
-    { id: 'vscode/docs/setup.md', label: 'setup.md', health: 'green', size: 0.75, accessible: true, repo: 'vscode' },
+    { id: 'garnet/README.md', label: 'README.md', health: 'green', size: 0.9, accessible: true, repo: 'garnet', qualityScore: 0.88, brokenLinkCount: 0, orphan: false, centrality: 0.92 },
+    { id: 'garnet/docs/build.md', label: 'build.md', health: 'yellow', size: 0.6, accessible: true, repo: 'garnet', qualityScore: 0.66, brokenLinkCount: 1, orphan: false, centrality: 0.45 },
+    { id: 'garnet/docs/build-legacy.md', label: 'build-legacy.md', health: 'red', size: 0.5, accessible: true, repo: 'garnet', qualityScore: 0.34, brokenLinkCount: 2, orphan: true, centrality: 0.08 },
+    { id: 'playwright/docs/intro.md', label: 'intro.md', health: 'green', size: 0.8, accessible: true, repo: 'playwright', qualityScore: 0.81, brokenLinkCount: 0, orphan: false, centrality: 0.74 },
+    { id: 'playwright/docs/codegen.md', label: 'codegen.md', health: 'green', size: 0.55, accessible: true, repo: 'playwright', qualityScore: 0.6, brokenLinkCount: 0, orphan: false, centrality: 0.3 },
+    { id: 'onnxruntime/docs/install.md', label: 'install.md', health: 'yellow', size: 0.7, accessible: true, repo: 'onnxruntime', qualityScore: 0.7, brokenLinkCount: 0, orphan: false, centrality: 0.66 },
+    { id: 'onnxruntime/docs/install-old.md', label: 'install-old.md', health: 'gray', size: 0.4, accessible: false, repo: 'onnxruntime', qualityScore: 0.41, brokenLinkCount: 1, orphan: true, centrality: 0.05 },
+    { id: 'vscode/docs/setup.md', label: 'setup.md', health: 'green', size: 0.75, accessible: true, repo: 'vscode', qualityScore: 0.78, brokenLinkCount: 0, orphan: false, centrality: 0.2 },
   ],
   edges: [
     { id: 'e1', source: 'garnet/README.md', target: 'garnet/docs/build.md', type: 'references', weight: 1 },
@@ -35,10 +39,24 @@ export const fixtureGraph: GraphDTO = {
 
 export const fixtureChatAnswer: ChatAnswer = {
   answer:
-    'To build Garnet from source, run `dotnet build -c Release` from the repository ' +
-    'root after installing the .NET 8 SDK. The canonical instructions live in ' +
-    '`garnet/docs/build.md`; an older `build-legacy.md` still references .NET 6 and ' +
-    'conflicts with the current guide.',
+    '**Building Garnet from source** comes down to installing the .NET SDK and running a ' +
+    'Release build from the repo root.\n\n' +
+    '### Prerequisites\n' +
+    '- The **.NET 8 SDK** (the current `garnet/docs/build.md` targets .NET 8 — an older ' +
+    '`build-legacy.md` still says .NET 6 and conflicts with it).\n' +
+    '- A clone of the repository and a terminal at its root.\n\n' +
+    '### Steps\n' +
+    '1. Clone the repo and `cd` into it.\n' +
+    '2. Restore dependencies: `dotnet restore`.\n' +
+    '3. Build in Release configuration:\n\n' +
+    '```bash\n' +
+    'dotnet build -c Release\n' +
+    '```\n\n' +
+    '4. (Optional) Run the test suite with `dotnet test -c Release` to verify the build.\n\n' +
+    '### Notes\n' +
+    'The canonical instructions live in `garnet/docs/build.md`. If you hit SDK-version errors, ' +
+    'check that you are on .NET 8 — the stale `build-legacy.md` page is a known conflicting ' +
+    'source and is flagged for review.',
   scope: 'garnet',
   confidence: 0.82,
   needsHumanReview: false,
@@ -186,3 +204,325 @@ export const fixtureTree: TreeNode[] = [
     ],
   },
 ];
+
+// --------------------------------------------------------------------------- //
+// Analysis / Insights fixtures (offline mode for the Insights surfaces).
+// Numbers are kept consistent with the planted stale/duplicate/conflict
+// narrative above and with `fixtureGraph`'s per-node overlay fields:
+//   - garnet/docs/build-legacy.md  -> worst quality, broken links, stale, orphan
+//   - onnxruntime/docs/install-old.md -> deprecated duplicate, orphan
+//   - garnet/README.md             -> healthy hub (top centrality)
+// Aggregate counts reconcile across the three fixtures (e.g. broken links = 4,
+// orphans = 2, at-risk = 3) so the dashboards line up.
+// --------------------------------------------------------------------------- //
+export const fixtureAnalysisReport: AnalysisReport = {
+  repoFilter: null,
+  totalDocs: 12,
+  qualityAvg: 0.68,
+  brokenLinksDetected: 4,
+  orphanCount: 2,
+  atRiskCount: 3,
+  worstQuality: [
+    {
+      docId: 'garnet/docs/build-legacy.md',
+      score: 0.34,
+      reasons: [
+        'References the superseded .NET 6 SDK',
+        'Missing "Usage" and "Troubleshooting" sections',
+        'Contains 3 TODO/TBD placeholders',
+      ],
+    },
+    {
+      docId: 'onnxruntime/docs/install-old.md',
+      score: 0.41,
+      reasons: ['94% duplicate of install.md', 'Marked deprecated', 'Thin content (240 words)'],
+    },
+    {
+      docId: 'playwright/docs/codegen.md',
+      score: 0.6,
+      reasons: ['No "Overview" heading', 'Few code examples for an API-heavy topic'],
+    },
+  ],
+  mostAtRisk: [
+    {
+      docId: 'garnet/docs/build-legacy.md',
+      score: 0.88,
+      reasons: [
+        'High-importance topic unverified for 412 days',
+        'Conflicts with canonical build.md',
+        'References superseded .NET 6 SDK',
+      ],
+    },
+    {
+      docId: 'onnxruntime/docs/install-old.md',
+      score: 0.6,
+      reasons: ['Deprecated duplicate of install.md', 'Unverified for 305 days'],
+    },
+    {
+      docId: 'garnet/docs/build.md',
+      score: 0.42,
+      reasons: ['Pending merge proposal with build-legacy.md', 'Yellow health'],
+    },
+  ],
+  topCentral: [
+    { docId: 'garnet/README.md', score: 0.92, reasons: ['Repo entry point', 'Five inbound references'] },
+    { docId: 'playwright/docs/intro.md', score: 0.74, reasons: ['Hub for the Playwright docs set'] },
+    {
+      docId: 'onnxruntime/docs/install.md',
+      score: 0.66,
+      reasons: ['Referenced by multiple install guides'],
+    },
+  ],
+  asOf: '2026-06-24T21:00:00Z',
+};
+
+/**
+ * Per-doc analysis keyed by `docId`. Covers a healthy hub, a decent canonical
+ * doc, the known-bad stale/conflict doc, and the deprecated orphan — each
+ * consistent with that node's `fixtureGraph` overlay fields. `llm` is null
+ * (the opt-in notes are only fetched on demand via `getDocAnalysis(id, { llm:true })`).
+ */
+export const fixtureDocAnalysis: Record<string, DocAnalysis> = {
+  'garnet/README.md': {
+    docId: 'garnet/README.md',
+    quality: {
+      qualityScore: 0.88,
+      readability: 64,
+      gradeLevel: 8.1,
+      completenessScore: 0.92,
+      structureScore: 0.9,
+      wordCount: 820,
+      placeholderCount: 0,
+      issues: [],
+    },
+    links: { brokenInternal: [], brokenLinkCount: 0, externalCount: 5, orphan: false, deadEnd: false },
+    drift: { ageDays: 21, isStale: false, riskScore: 0.12, riskReasons: [] },
+    centrality: 0.92,
+    llm: null,
+  },
+  'garnet/docs/build.md': {
+    docId: 'garnet/docs/build.md',
+    quality: {
+      qualityScore: 0.66,
+      readability: 58,
+      gradeLevel: 9.5,
+      completenessScore: 0.7,
+      structureScore: 0.72,
+      wordCount: 540,
+      placeholderCount: 0,
+      issues: ['Missing a "Troubleshooting" section'],
+    },
+    links: {
+      brokenInternal: ['./advanced-tuning.md'],
+      brokenLinkCount: 1,
+      externalCount: 3,
+      orphan: false,
+      deadEnd: false,
+    },
+    drift: {
+      ageDays: 96,
+      isStale: false,
+      riskScore: 0.42,
+      riskReasons: ['Pending merge proposal with build-legacy.md'],
+    },
+    centrality: 0.45,
+    llm: null,
+  },
+  'garnet/docs/build-legacy.md': {
+    docId: 'garnet/docs/build-legacy.md',
+    quality: {
+      qualityScore: 0.34,
+      readability: 42.5,
+      gradeLevel: 13.2,
+      completenessScore: 0.4,
+      structureScore: 0.45,
+      wordCount: 180,
+      placeholderCount: 3,
+      issues: [
+        'References the superseded .NET 6 SDK',
+        'Missing "Usage" and "Troubleshooting" sections',
+        'Contains 3 TODO/TBD placeholders',
+        'Document is thin (180 words)',
+      ],
+    },
+    links: {
+      brokenInternal: ['../setup/dotnet6.md', './ci/legacy-pipeline.md'],
+      brokenLinkCount: 2,
+      externalCount: 1,
+      orphan: true,
+      deadEnd: true,
+    },
+    drift: {
+      ageDays: 412,
+      isStale: true,
+      riskScore: 0.88,
+      riskReasons: [
+        'High-importance topic unverified for 412 days',
+        'Conflicts with canonical build.md',
+        'References superseded .NET 6 SDK',
+      ],
+    },
+    centrality: 0.08,
+    llm: null,
+  },
+  'onnxruntime/docs/install-old.md': {
+    docId: 'onnxruntime/docs/install-old.md',
+    quality: {
+      qualityScore: 0.41,
+      readability: 51,
+      gradeLevel: 11,
+      completenessScore: 0.5,
+      structureScore: 0.55,
+      wordCount: 240,
+      placeholderCount: 1,
+      issues: ['94% duplicate of install.md', 'Marked deprecated', 'Contains 1 placeholder'],
+    },
+    links: {
+      brokenInternal: ['./gpu/cuda-10.md'],
+      brokenLinkCount: 1,
+      externalCount: 0,
+      orphan: true,
+      deadEnd: false,
+    },
+    drift: {
+      ageDays: 305,
+      isStale: true,
+      riskScore: 0.6,
+      riskReasons: ['Deprecated duplicate of install.md', 'Unverified for 305 days'],
+    },
+    centrality: 0.05,
+    llm: null,
+  },
+};
+
+/**
+ * Build a complete, plausible {@link DocAnalysis} for ANY document so the demo's
+ * per-doc Insights panel is always fully populated offline — even for a doc that
+ * has no hand-authored entry in {@link fixtureDocAnalysis}. Values are derived
+ * deterministically from the docId (stable across renders) and, when available,
+ * anchored to the doc's graph-node overlay (health / quality / broken links /
+ * orphan / centrality) so the numbers agree with what the graph shows.
+ */
+export function synthesizeDocAnalysis(docId: string, node?: GraphNode | null): DocAnalysis {
+  // Stable 0–1 pseudo-randoms from the docId (FNV-1a).
+  const rand = (salt: string): number => {
+    let h = 2166136261;
+    const s = docId + salt;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0) / 0xffffffff;
+  };
+  const r1 = rand('#1');
+  const r2 = rand('#2');
+  const r3 = rand('#3');
+
+  const health = node?.health ?? (r1 < 0.25 ? 'red' : r1 < 0.6 ? 'yellow' : 'green');
+  const bad = health === 'red';
+  const aging = health === 'yellow';
+
+  const qualityScore =
+    node?.qualityScore ??
+    (bad ? 0.3 + r1 * 0.14 : aging ? 0.55 + r1 * 0.16 : 0.78 + r1 * 0.16);
+  const brokenLinkCount = node?.brokenLinkCount ?? (bad ? 2 : aging ? 1 : 0);
+  const orphan = node?.orphan ?? r2 < 0.3;
+  const centrality = node?.centrality ?? (bad ? 0.05 + r2 * 0.12 : 0.25 + r2 * 0.55);
+  const ageDays = bad
+    ? 300 + Math.round(r3 * 160)
+    : aging
+      ? 90 + Math.round(r3 * 130)
+      : 8 + Math.round(r3 * 70);
+  const isStale = bad || ageDays > 240;
+  const riskScore = bad ? 0.72 + r2 * 0.2 : aging ? 0.4 + r2 * 0.2 : 0.08 + r2 * 0.16;
+  const placeholderCount = bad ? 1 + Math.round(r3 * 2) : 0;
+  const wordCount = bad ? 150 + Math.round(r1 * 160) : aging ? 420 + Math.round(r1 * 320) : 620 + Math.round(r1 * 500);
+  const completenessScore = Math.min(0.98, qualityScore + (r3 - 0.5) * 0.1);
+  const structureScore = Math.min(0.98, qualityScore + (r2 - 0.5) * 0.1);
+
+  const base = (docId.split('/').pop() || docId).replace(/\.[^.]+$/, '');
+  const brokenInternal = Array.from({ length: brokenLinkCount }, (_, i) =>
+    i === 0 ? `./${base}-legacy.md` : `../archive/${base}-v${i}.md`,
+  );
+
+  const qualityIssues: string[] = [];
+  if (placeholderCount > 0) qualityIssues.push(`Contains ${placeholderCount} TODO/TBD placeholder${placeholderCount > 1 ? 's' : ''}`);
+  if (structureScore < 0.62) qualityIssues.push('Missing "Usage" and "Troubleshooting" sections');
+  if (qualityScore < 0.5) qualityIssues.push(`Thin content (${wordCount} words)`);
+  if (qualityIssues.length === 0 && aging) qualityIssues.push('Could use more code examples');
+
+  const riskReasons: string[] = [];
+  if (isStale) riskReasons.push(`Unverified for ${ageDays} days`);
+  if (bad) riskReasons.push('Flagged stale/conflicting by DocGuardian');
+  if (orphan) riskReasons.push('Orphaned — no inbound references');
+
+  return {
+    docId,
+    quality: {
+      qualityScore,
+      readability: bad ? 40 + r1 * 12 : aging ? 52 + r1 * 12 : 62 + r1 * 10,
+      gradeLevel: bad ? 12 + r2 * 2.5 : aging ? 9.5 + r2 * 2 : 7.5 + r2 * 1.5,
+      completenessScore,
+      structureScore,
+      wordCount,
+      placeholderCount,
+      issues: qualityIssues,
+    },
+    links: {
+      brokenInternal,
+      brokenLinkCount,
+      externalCount: Math.round(r3 * 4),
+      orphan,
+      deadEnd: orphan && r1 < 0.5,
+    },
+    drift: {
+      ageDays,
+      isStale,
+      riskScore,
+      riskReasons,
+    },
+    centrality,
+    llm: null,
+  };
+}
+
+export const fixtureTrends: TrendsDTO = {
+  // ~2 weeks of daily snapshots: detection ramps up first, then fixes catch up
+  // (the detected/fixed gap narrows) while broken links fall and quality climbs.
+  // The final day matches `fixtureMetrics` (staleDetected 12, staleFixed 8,
+  // conflictsDetected 6, conflictsResolved 4) and `fixtureAnalysisReport.qualityAvg`.
+  series: [
+    { date: '2026-06-11', staleDetected: 2, staleFixed: 0, conflictsDetected: 1, conflictsResolved: 0, brokenLinks: 11, qualityAvg: 0.56 },
+    { date: '2026-06-12', staleDetected: 3, staleFixed: 0, conflictsDetected: 1, conflictsResolved: 0, brokenLinks: 11, qualityAvg: 0.57 },
+    { date: '2026-06-13', staleDetected: 5, staleFixed: 1, conflictsDetected: 2, conflictsResolved: 0, brokenLinks: 10, qualityAvg: 0.58 },
+    { date: '2026-06-14', staleDetected: 6, staleFixed: 1, conflictsDetected: 2, conflictsResolved: 1, brokenLinks: 10, qualityAvg: 0.59 },
+    { date: '2026-06-15', staleDetected: 8, staleFixed: 2, conflictsDetected: 3, conflictsResolved: 1, brokenLinks: 9, qualityAvg: 0.6 },
+    { date: '2026-06-16', staleDetected: 9, staleFixed: 3, conflictsDetected: 3, conflictsResolved: 1, brokenLinks: 9, qualityAvg: 0.61 },
+    { date: '2026-06-17', staleDetected: 10, staleFixed: 4, conflictsDetected: 4, conflictsResolved: 2, brokenLinks: 8, qualityAvg: 0.62 },
+    { date: '2026-06-18', staleDetected: 11, staleFixed: 5, conflictsDetected: 4, conflictsResolved: 2, brokenLinks: 7, qualityAvg: 0.63 },
+    { date: '2026-06-19', staleDetected: 11, staleFixed: 5, conflictsDetected: 5, conflictsResolved: 2, brokenLinks: 6, qualityAvg: 0.64 },
+    { date: '2026-06-20', staleDetected: 11, staleFixed: 6, conflictsDetected: 5, conflictsResolved: 3, brokenLinks: 6, qualityAvg: 0.65 },
+    { date: '2026-06-21', staleDetected: 12, staleFixed: 6, conflictsDetected: 5, conflictsResolved: 3, brokenLinks: 5, qualityAvg: 0.66 },
+    { date: '2026-06-22', staleDetected: 12, staleFixed: 7, conflictsDetected: 6, conflictsResolved: 3, brokenLinks: 4, qualityAvg: 0.67 },
+    { date: '2026-06-23', staleDetected: 12, staleFixed: 8, conflictsDetected: 6, conflictsResolved: 4, brokenLinks: 4, qualityAvg: 0.675 },
+    { date: '2026-06-24', staleDetected: 12, staleFixed: 8, conflictsDetected: 6, conflictsResolved: 4, brokenLinks: 3, qualityAvg: 0.68 },
+  ],
+  // Per-repo totals sum to the corpus aggregates in fixtureAnalysisReport
+  // (totalDocs 12, brokenLinks 4, atRisk 3). The graph above visualizes a subset.
+  byRepo: [
+    { repo: 'garnet', totalDocs: 4, qualityAvg: 0.64, brokenLinks: 3, atRisk: 2 },
+    { repo: 'playwright', totalDocs: 3, qualityAvg: 0.74, brokenLinks: 0, atRisk: 0 },
+    { repo: 'onnxruntime', totalDocs: 3, qualityAvg: 0.6, brokenLinks: 1, atRisk: 1 },
+    { repo: 'vscode', totalDocs: 2, qualityAvg: 0.8, brokenLinks: 0, atRisk: 0 },
+  ],
+  proposalAcceptanceRate: 0.72,
+  confidenceHistogram: [
+    { bucket: '0.0-0.2', count: 1 },
+    { bucket: '0.2-0.4', count: 3 },
+    { bucket: '0.4-0.6', count: 7 },
+    { bucket: '0.6-0.8', count: 14 },
+    { bucket: '0.8-1.0', count: 9 },
+  ],
+  evidenceCoverage: 0.86,
+  asOf: '2026-06-24T21:00:00Z',
+};

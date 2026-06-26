@@ -29,18 +29,32 @@ def _execmany(sql: str, params: list[dict], conn: Optional[psycopg.Connection]) 
 def upsert_documents(rows: list[dict[str, Any]], conn: Optional[psycopg.Connection] = None) -> int:
     sql = """
     INSERT INTO documents (doc_id, repo, path, branch, byte_size, commit_sha,
-                           commit_author, commit_date, content_hash, fetched_at, summary)
+                           commit_author, commit_date, content_hash, fetched_at, summary,
+                           title, original_content, original_path, ai_content,
+                           ai_rewritten, rationale)
     VALUES (%(doc_id)s, %(repo)s, %(path)s, %(branch)s, %(byte_size)s, %(commit_sha)s,
-            %(commit_author)s, %(commit_date)s, %(content_hash)s, %(fetched_at)s, %(summary)s)
+            %(commit_author)s, %(commit_date)s, %(content_hash)s, %(fetched_at)s, %(summary)s,
+            %(title)s, %(original_content)s, %(original_path)s, %(ai_content)s,
+            %(ai_rewritten)s, %(rationale)s)
     ON CONFLICT (doc_id) DO UPDATE SET
         commit_sha = EXCLUDED.commit_sha,
         commit_date = EXCLUDED.commit_date,
         content_hash = EXCLUDED.content_hash,
         fetched_at = EXCLUDED.fetched_at,
-        summary = COALESCE(EXCLUDED.summary, documents.summary);
+        summary = COALESCE(EXCLUDED.summary, documents.summary),
+        title = COALESCE(EXCLUDED.title, documents.title),
+        original_content = COALESCE(EXCLUDED.original_content, documents.original_content),
+        original_path = COALESCE(EXCLUDED.original_path, documents.original_path),
+        ai_content = COALESCE(EXCLUDED.ai_content, documents.ai_content),
+        ai_rewritten = EXCLUDED.ai_rewritten,
+        rationale = COALESCE(EXCLUDED.rationale, documents.rationale);
     """
-    # `summary` is optional for callers (e.g. repo ingest) that don't compute it.
-    rows = [{"summary": None, **r} for r in rows]
+    # Defaults keep callers that don't compute these (e.g. repo ingest) working.
+    defaults = {
+        "summary": None, "title": None, "original_content": None, "original_path": None,
+        "ai_content": None, "ai_rewritten": False, "rationale": None,
+    }
+    rows = [{**defaults, **r} for r in rows]
     return _execmany(sql, rows, conn)
 
 

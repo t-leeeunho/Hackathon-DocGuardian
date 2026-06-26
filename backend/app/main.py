@@ -22,9 +22,22 @@ from app.ingestion.intake import (
     UnsupportedFormatError,
     ingest_content,
 )
-from app.storage.queries import get_doc_summaries, get_document, get_graph, list_doc_ids
+from app.storage.queries import (
+    get_doc_summaries,
+    get_document,
+    get_document_source,
+    get_edge_type_counts,
+    get_graph,
+    insert_analysis_snapshot,
+    list_doc_ids,
+)
 from app.storage.vectorstore import search as vector_search
 from app.tree import build_tree
+
+# Analysis / Insights layer (imported at module level for easy test patching).
+from app.analysis.report import compute_doc_analysis, compute_report, report_to_snapshot_row
+from app.analysis.trends import compute_trends
+from app.analysis.llm import analyze_with_llm
 
 API_DESCRIPTION = """
 Backend API for **DocGuardian AI**.
@@ -101,6 +114,12 @@ class IngestResponse(BaseModel):
     edges: int
     conflictEdges: int = Field(0, description="duplicate/conflict edges found on intake")
     summary: str | None = Field(None, description="AI/extractive one-line description")
+    title: str | None = Field(None, description="Librarian-assigned document title")
+    category: str | None = Field(None, description="library category the agent filed it under")
+    rationale: str | None = Field(None, description="why the agent rewrote + placed it here")
+    originalPath: str | None = Field(None, description="path the user dropped the file at")
+    suggestedPath: str | None = Field(None, description="namespace-relative path the agent chose")
+    aiRewritten: bool = Field(False, description="true when stored content is an AI rewrite")
 
 
 class TreeNode(BaseModel):
@@ -118,6 +137,11 @@ class GraphNode(BaseModel):
     size: float
     accessible: bool
     repo: str
+    # Analysis / Insights overlay (additive, optional — older clients ignore these).
+    qualityScore: float | None = Field(None, description="0–1 composite doc-quality score")
+    brokenLinkCount: int | None = Field(None, description="number of broken internal links")
+    orphan: bool | None = Field(None, description="true when no other doc references this one")
+    centrality: float | None = Field(None, description="0–1 PageRank centrality (drives size)")
 
 
 class GraphEdgeDTO(BaseModel):
@@ -147,7 +171,155 @@ class DocumentResponse(BaseModel):
     path: str
     commitSha: str | None = None
     commitDate: str | None = None
+    title: str | None = Field(None, description="Librarian-assigned title")
+    aiRewritten: bool = Field(False, description="true when this doc is an AI rewrite of a drop-off")
+    originalPath: str | None = Field(None, description="path the user originally dropped it at")
+    rationale: str | None = Field(None, description="why the agent rewrote + placed it here")
     chunks: list[ChunkDetail]
+
+
+class DocumentSourceResponse(BaseModel):
+    docId: str
+    path: str
+    title: str | None = None
+    summary: str | None = None
+    aiRewritten: bool = False
+    rationale: str | None = None
+    originalPath: str | None = Field(None, description="path the user dropped the file at")
+    originalContent: str = Field("", description="the user's untouched original document")
+    aiContent: str = Field("", description="the AI-agent-friendly rewrite shown by default")
+
+
+# --------------------------------------------------------------------------- #
+# Analysis / Insights DTOs (GET /analysis, /analysis/{docId}, /analysis/trends)
+# Deterministic-first analyzers; `llm` is populated only on demand (?llm=true).
+# --------------------------------------------------------------------------- #
+class DocQualityDTO(BaseModel):
+    qualityScore: float = Field(..., description="0–1 composite quality score")
+    readability: float = Field(..., description="Flesch reading-ease score")
+    gradeLevel: float = Field(..., description="Flesch–Kincaid grade level")
+    completenessScore: float = Field(..., description="0–1 expected-section coverage")
+    structureScore: float = Field(..., description="0–1 structural quality")
+    wordCount: int
+    placeholderCount: int = Field(..., description="TODO/FIXME/TBD/placeholder count")
+    issues: list[str] = []
+
+
+class DocLinksDTO(BaseModel):
+    brokenInternal: list[str] = Field([], description="unresolved internal link targets")
+    brokenLinkCount: int = 0
+    externalCount: int = 0
+    orphan: bool = Field(False, description="no inbound references")
+    deadEnd: bool = Field(False, description="no outbound references")
+
+
+class DocDriftDTO(BaseModel):
+    ageDays: int = 0
+    isStale: bool = False
+    riskScore: float = Field(0.0, description="0–1 decay/at-risk score")
+    riskReasons: list[str] = []
+
+
+class LlmQualityNotes(BaseModel):
+    clarityScore: float | None = None
+    issues: list[str] = []
+    suggestedSections: list[str] = []
+
+
+class DocAnalysis(BaseModel):
+    docId: str
+    quality: DocQualityDTO
+    links: DocLinksDTO
+    drift: DocDriftDTO
+    centrality: float = Field(0.0, description="0–1 PageRank centrality")
+    llm: LlmQualityNotes | None = Field(None, description="opt-in LLM notes (?llm=true)")
+
+
+class DocRef(BaseModel):
+    docId: str
+    score: float
+    reasons: list[str] = []
+
+
+class AnalysisReport(BaseModel):
+    repoFilter: str | None = None
+    totalDocs: int
+    qualityAvg: float
+    brokenLinksDetected: int
+    orphanCount: int
+    atRiskCount: int
+    worstQuality: list[DocRef] = []
+    mostAtRisk: list[DocRef] = []
+    topCentral: list[DocRef] = []
+    asOf: str
+
+
+class TrendPoint(BaseModel):
+    date: str
+    staleDetected: int = 0
+    staleFixed: int = 0
+    conflictsDetected: int = 0
+    conflictsResolved: int = 0
+    brokenLinks: int = 0
+    qualityAvg: float = 0.0
+
+
+class RepoBreakdown(BaseModel):
+    repo: str
+    totalDocs: int
+    qualityAvg: float
+    brokenLinks: int
+    atRisk: int
+
+
+class HistogramBucket(BaseModel):
+    bucket: str
+    count: int
+
+
+class TrendsDTO(BaseModel):
+    series: list[TrendPoint] = []
+    byRepo: list[RepoBreakdown] = []
+    proposalAcceptanceRate: float = 0.0
+    confidenceHistogram: list[HistogramBucket] = []
+    evidenceCoverage: float = 0.0
+    asOf: str
+
+
+class SnapshotRequest(BaseModel):
+    """Optional body for ``POST /analysis/snapshot``."""
+
+    repo: str | None = Field(None, description="Restrict snapshot to one repo/namespace")
+
+
+# --------------------------------------------------------------------------- #
+# Internal helpers
+# --------------------------------------------------------------------------- #
+def _capture_snapshot(repo: str | None = None) -> None:
+    """Best-effort analysis snapshot capture + event broadcast. Never raises.
+
+    Called after ingest-complete, proposal-apply, and rollback so the trends
+    time-series always has a fresh data point after any governed change.
+    """
+    try:
+        from app.services import events  # noqa: PLC0415
+
+        report = compute_report(repo)
+        try:
+            counts = get_edge_type_counts(repo)
+        except Exception:  # noqa: BLE001
+            counts: dict = {}
+        row = report_to_snapshot_row(
+            report,
+            repo=repo,
+            conflictsDetected=counts.get("conflicts-with", 0),
+            duplicatesDetected=counts.get("duplicate-of", 0),
+        )
+        sid = insert_analysis_snapshot(row)
+        events.publish("analysis", snapshotId=sid, repo=repo)
+        events.publish("metrics")
+    except Exception:  # noqa: BLE001
+        pass  # best-effort — never block the calling path
 
 
 # --------------------------------------------------------------------------- #
@@ -242,7 +414,31 @@ def add_document(
         edges=result["edges"],
         conflictEdges=result.get("conflictEdges", 0),
         summary=result.get("summary"),
+        title=result.get("title"),
+        category=result.get("category"),
+        rationale=result.get("rationale"),
+        originalPath=result.get("originalPath"),
+        suggestedPath=result.get("suggestedPath"),
+        aiRewritten=result.get("aiRewritten", False),
     )
+
+
+def _ingest_result_dto(result: dict) -> dict:
+    """Convert ``ingest_content``'s (mixed-case) dict to the camelCase shape the
+    frontend ``DocumentIntakeResponse`` expects (same as the sync 201 response)."""
+    return IngestResponse(
+        docId=result["doc_id"],
+        chunks=result["chunks"],
+        edges=result["edges"],
+        conflictEdges=result.get("conflictEdges", 0),
+        summary=result.get("summary"),
+        title=result.get("title"),
+        category=result.get("category"),
+        rationale=result.get("rationale"),
+        originalPath=result.get("originalPath"),
+        suggestedPath=result.get("suggestedPath"),
+        aiRewritten=result.get("aiRewritten", False),
+    ).model_dump()
 
 
 def _run_ingest_job(job_id: str, name: str, content: str, namespace: str) -> None:
@@ -257,12 +453,74 @@ def _run_ingest_job(job_id: str, name: str, content: str, namespace: str) -> Non
     events.publish("ingest", jobId=job_id, status="processing")
     try:
         result = ingest_content(name, content, namespace)
-        jobs.set_status(job_id, "succeeded", result=result)
+        jobs.set_status(job_id, "succeeded", result=_ingest_result_dto(result))
         events.publish(
             "ingest", jobId=job_id, status="ready", docId=result["doc_id"]
         )
         events.publish("graph", docId=result["doc_id"])
+        _capture_snapshot(namespace)  # best-effort snapshot + analysis event
     except Exception as exc:  # IngestError or anything else -> nothing persisted
+        jobs.set_status(job_id, "failed", error=str(exc))
+        events.publish("ingest", jobId=job_id, status="failed", error=str(exc))
+
+
+class UrlIngestRequest(BaseModel):
+    url: str = Field(..., examples=["https://microsoft.github.io/garnet/docs"])
+    maxPages: int = Field(8, ge=1, le=40, description="maximum number of pages to crawl")
+    maxDepth: int = Field(2, ge=0, le=4, description="how many link-hops from the start URL")
+    namespace: str | None = Field(None, description="override the auto host-derived namespace")
+
+
+@app.post(
+    "/ingest/url",
+    status_code=202,
+    tags=["intake"],
+    summary="Import a website URL and its sub-pages",
+    description="Crawls the URL (same host + path prefix), extracts each page as "
+    "markdown, and imports it through the Librarian (rewrite + re-file + embed). "
+    "Always runs in the background — returns 202 + a jobId; poll GET /jobs/{id}.",
+)
+def ingest_url_endpoint(req: UrlIngestRequest):
+    import threading
+
+    from fastapi.responses import JSONResponse
+
+    from app.services import jobs
+
+    job = jobs.create_job(req.url)
+    threading.Thread(
+        target=_run_url_ingest_job,
+        args=(job["jobId"], req.url, req.maxPages, req.maxDepth, req.namespace),
+        daemon=True,
+    ).start()
+    return JSONResponse(status_code=202, content=job)
+
+
+def _run_url_ingest_job(
+    job_id: str, url: str, max_pages: int, max_depth: int, namespace: str | None
+) -> None:
+    """Background worker: crawl + import a URL, reporting progress as pages land."""
+    from app.services import events, jobs
+
+    jobs.set_status(job_id, "processing")
+    events.publish("ingest", jobId=job_id, status="processing")
+
+    def _progress(n: int, page_url: str, title: str) -> None:
+        jobs.set_progress(job_id, imported=n, message=f"Imported {n} page(s) — {title[:60]}")
+        events.publish("ingest", jobId=job_id, status="processing", imported=n, page=page_url)
+        events.publish("graph")
+
+    try:
+        from app.ingestion.web_ingest import ingest_url
+
+        result = ingest_url(
+            url, max_pages=max_pages, max_depth=max_depth, namespace=namespace, progress=_progress
+        )
+        jobs.set_status(job_id, "succeeded", result=result)
+        events.publish("ingest", jobId=job_id, status="ready")
+        events.publish("graph")
+        events.publish("metrics")
+    except Exception as exc:  # WebIngestError or anything else -> report failure
         jobs.set_status(job_id, "failed", error=str(exc))
         events.publish("ingest", jobId=job_id, status="failed", error=str(exc))
 
@@ -321,13 +579,30 @@ def document(doc_id: str) -> dict:
     return doc
 
 
+@app.get(
+    "/original/{doc_id:path}",
+    response_model=DocumentSourceResponse,
+    tags=["navigation"],
+    summary="Original drop-off vs. the AI rewrite of a document",
+    description="DocGuardian shows the AI-agent-friendly rewrite by default; this "
+    "returns the user's untouched original (plus the rewrite) so it can be viewed on "
+    "demand. Uses an /original/ prefix so the catch-all /documents/{id} route does not "
+    "shadow it.",
+)
+def document_original(doc_id: str) -> dict:
+    src = get_document_source(doc_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail=f"document not found: {doc_id}")
+    return src
+
+
 # --------------------------------------------------------------------------- #
 # Agent endpoints (LangGraph + Azure OpenAI)
 # --------------------------------------------------------------------------- #
 class ChatRequest(BaseModel):
     query: str = Field(..., examples=["how do I build garnet from source?"])
     repo: str | None = Field(None, description="shortName scope (e.g. garnet)")
-    k: int = Field(5, ge=1, le=20)
+    k: int = Field(6, ge=1, le=20)
 
 
 class ProposeRequest(BaseModel):
@@ -410,13 +685,15 @@ def approve(proposal_id: str, req: ApproveRequest) -> dict:
     from app.governance.service import GovernanceError, StagedApprovalRequired, approve_proposal
 
     try:
-        return approve_proposal(
+        result = approve_proposal(
             proposal_id, req.approver, req.roles, req.reason, force=req.force
         )
     except StagedApprovalRequired as exc:
         raise HTTPException(status_code=202, detail=str(exc)) from exc
     except GovernanceError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    _capture_snapshot()  # best-effort analysis snapshot after apply
+    return result
 
 
 @app.post(
@@ -428,9 +705,11 @@ def rollback(proposal_id: str, req: ApproveRequest) -> dict:
     from app.governance.service import GovernanceError, rollback_proposal
 
     try:
-        return rollback_proposal(proposal_id, req.approver, req.roles, req.reason)
+        result = rollback_proposal(proposal_id, req.approver, req.roles, req.reason)
     except GovernanceError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    _capture_snapshot()  # best-effort analysis snapshot after rollback
+    return result
 
 
 @app.get(
@@ -455,6 +734,132 @@ def metrics() -> dict:
     from app.governance.store import get_metrics_dto
 
     return get_metrics_dto()
+
+
+# --------------------------------------------------------------------------- #
+# Analysis / Insights endpoints (corpus report, per-doc, trends, snapshot)
+# IMPORTANT: /analysis/trends is registered BEFORE the /analysis/{doc_id:path}
+# catch-all so the static "trends" segment is never swallowed.
+# --------------------------------------------------------------------------- #
+@app.get(
+    "/analysis",
+    response_model=AnalysisReport,
+    tags=["governance"],
+    summary="Corpus analysis report (quality, links, drift, centrality)",
+    description=(
+        "Aggregates per-doc quality / link / drift scores across the corpus "
+        "(or a single repo when ?repo= is set). Returns worst-offender lists "
+        "and high-level counters."
+    ),
+)
+def get_analysis(
+    repo: str | None = Query(None, description="shortName filter (e.g. vscode)")
+) -> dict:
+    return compute_report(repo)
+
+
+@app.get(
+    "/analysis/trends",
+    response_model=TrendsDTO,
+    tags=["governance"],
+    summary="Corpus governance trends (time-series from analysis snapshots)",
+    description=(
+        "Returns a ``TrendsDTO`` assembled from the ``analysis_snapshots`` "
+        "table and the provenance log. Registered before the catch-all "
+        "``/analysis/{docId}`` route so 'trends' is never shadowed."
+    ),
+)
+def get_analysis_trends(
+    repo: str | None = Query(None, description="shortName filter")
+) -> dict:
+    return compute_trends(repo)
+
+
+@app.get(
+    "/analysis/{doc_id:path}",
+    response_model=DocAnalysis,
+    tags=["governance"],
+    summary="Per-doc analysis (quality + links + drift + centrality)",
+    description=(
+        "Full analysis breakdown for one document. ACL-checked: returns 404 "
+        "if the document is inaccessible or unknown. Add ``?llm=true`` to "
+        "include opt-in LLM semantic notes (≤1 LLM call; safe/never raises)."
+    ),
+)
+def get_doc_analysis(
+    doc_id: str,
+    llm: bool = Query(False, description="Include opt-in LLM quality notes"),
+    repo: str | None = Query(None, description="namespace/repo filter for corpus PageRank"),
+) -> dict:
+    # 1. Existence check
+    doc = get_document(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"document not found: {doc_id}")
+
+    # 2. ACL check — use the mocked PUBLIC_PRINCIPAL (role:engineer) consistent
+    #    with the governance layer's default.  Fail-open when the governance
+    #    store is unavailable (mirrors graph endpoint's principal=None fallback).
+    try:
+        from app.governance.store import get_document_meta  # noqa: PLC0415
+        from app.governance.acl import PUBLIC_PRINCIPAL, can_access as _acl_check  # noqa: PLC0415
+
+        meta = get_document_meta(doc_id)
+        if meta is not None and not _acl_check(PUBLIC_PRINCIPAL, meta.get("acl")):
+            # 404 (not 403) to avoid leaking the existence of restricted docs.
+            raise HTTPException(status_code=404, detail=f"document not found: {doc_id}")
+    except HTTPException:
+        raise  # re-raise our own 404
+    except Exception:  # noqa: BLE001
+        pass  # governance store unavailable → fail open
+
+    # 3. Optional LLM layer (cost guard: at most 1 call, never raises)
+    llm_notes = None
+    if llm:
+        content = "\n".join(c["text"] for c in doc.get("chunks", []))
+        heading_paths = [c["headingPath"] for c in doc.get("chunks", []) if c.get("headingPath")]
+        llm_notes = analyze_with_llm(doc_id, content, heading_paths=heading_paths)
+
+    return compute_doc_analysis(doc_id, namespace=repo, llm_notes=llm_notes)
+
+
+@app.post(
+    "/analysis/snapshot",
+    tags=["governance"],
+    summary="Capture and persist an analysis snapshot",
+    description=(
+        "Runs the corpus analysis, enriches it with edge-type counts, and "
+        "inserts a row into the ``analysis_snapshots`` table.  Also auto-"
+        "triggered (best-effort) on ingest-complete, proposal-apply, and "
+        "rollback.  Returns the stored row plus its ``snapshotId``."
+    ),
+)
+def create_analysis_snapshot(req: SnapshotRequest | None = None) -> dict:
+    from app.services import events  # noqa: PLC0415
+
+    repo = req.repo if req is not None else None
+    report = compute_report(repo)
+
+    try:
+        counts = get_edge_type_counts(repo)
+    except Exception:  # noqa: BLE001
+        counts: dict = {}
+
+    row = report_to_snapshot_row(
+        report,
+        repo=repo,
+        conflictsDetected=counts.get("conflicts-with", 0),
+        duplicatesDetected=counts.get("duplicate-of", 0),
+    )
+
+    try:
+        snapshot_id = insert_analysis_snapshot(row)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"snapshot insert failed: {exc}") from exc
+
+    events.publish("analysis", snapshotId=snapshot_id, repo=repo)
+    events.publish("metrics")
+
+    return {**row, "snapshotId": snapshot_id}
 
 
 # --------------------------------------------------------------------------- #
@@ -506,7 +911,7 @@ def refresh_document(doc_id: str, req: RefreshRequest | None = None) -> dict:
         from app.ingestion.intake import ingest_content
         try:
             result = ingest_content(
-                meta["path"], new_content, namespace=meta["repo"]
+                meta["path"], new_content, namespace=meta["repo"], rewrite=False
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -521,7 +926,6 @@ def refresh_document(doc_id: str, req: RefreshRequest | None = None) -> dict:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         # Count existing chunks.
-        from psycopg.rows import dict_row
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = %s", (doc_id,))
@@ -561,6 +965,7 @@ class VerifyRequest(BaseModel):
     commitSha: str | None = None
     image: str = Field("python:3.11-slim")
     timeoutMs: int = Field(30_000, ge=1, le=120_000)
+    allowNetwork: bool = Field(False)
 
 
 @app.post(
@@ -578,6 +983,7 @@ def verify(req: VerifyRequest) -> dict:
             commit_sha=req.commitSha,
             image=req.image,
             timeout_ms=req.timeoutMs,
+            allow_network=req.allowNetwork,
         )
     )
     return result.model_dump()

@@ -6,6 +6,7 @@ interface HighlightState {
   edgeIds: Set<string>;
   intensity: number;
   reason: GraphHighlightEvent['reason'] | null;
+  focus: boolean;
 }
 
 const EMPTY: HighlightState = {
@@ -13,6 +14,7 @@ const EMPTY: HighlightState = {
   edgeIds: new Set(),
   intensity: 0,
   reason: null,
+  focus: false,
 };
 
 export function useHighlight() {
@@ -27,6 +29,7 @@ export function useHighlight() {
       edgeIds: new Set(event.edgeIds ?? []),
       intensity: event.intensity,
       reason: event.reason,
+      focus: event.focus ?? false,
     });
 
     timerRef.current = setTimeout(() => {

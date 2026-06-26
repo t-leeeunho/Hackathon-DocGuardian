@@ -66,7 +66,7 @@ def _format_sources(rows: list[dict]) -> str:
         heading = " > ".join(r["heading_path"]) if r["heading_path"] else "(root)"
         blocks.append(
             f"[{i}] doc_id={r['doc_id']} lines={r['line_start']}-{r['line_end']} "
-            f"score={r['score']:.3f}\n    heading: {heading}\n    {r['text'][:600]}"
+            f"score={r['score']:.3f}\n    heading: {heading}\n    {r['text'][:1200]}"
         )
     return "\n\n".join(blocks) if blocks else "(no sources found)"
 
@@ -80,8 +80,10 @@ def _citations_from_rows(rows: list[dict]) -> list[Citation]:
     return [
         Citation(
             doc_id=r["doc_id"],
+            chunk_id=r.get("chunk_id", ""),
             line_range=[r["line_start"], r["line_end"]],
             commit_sha=r.get("commit_sha", ""),
+            text=r["text"][:280].strip(),
             relevance=round(_clamp01(r["score"]), 4),
         )
         for r in rows
@@ -89,15 +91,28 @@ def _citations_from_rows(rows: list[dict]) -> list[Citation]:
 
 
 def _enrich_citations(citations: list[Citation], rows: list[dict]) -> list[Citation]:
-    """Force commit_sha to the authoritative value from retrieved rows.
+    """Force provenance to the authoritative values from retrieved rows.
 
-    commit_sha is provenance from our own data, never something the LLM should
-    supply — models will otherwise hallucinate SHAs (e.g. "abc123"). We override
-    it by doc_id; citations to docs that were not retrieved get an empty SHA.
+    commit_sha, chunk_id, the line range, and the evidence snippet are provenance
+    from our own indexed data, never something the LLM should supply — models will
+    otherwise hallucinate SHAs (e.g. "abc123") or paraphrase quotes. We override
+    them by doc_id; citations to docs that were not retrieved get an empty SHA so
+    the evidence gate can catch them.
     """
-    sha_by_doc = {r["doc_id"]: r.get("commit_sha", "") for r in rows}
+    row_by_doc: dict[str, dict] = {}
+    for r in rows:
+        row_by_doc.setdefault(r["doc_id"], r)
     for c in citations:
-        c.commit_sha = sha_by_doc.get(c.doc_id, "")
+        row = row_by_doc.get(c.doc_id)
+        if row is None:
+            c.commit_sha = ""
+            continue
+        c.commit_sha = row.get("commit_sha", "")
+        c.chunk_id = row.get("chunk_id", "") or c.chunk_id
+        if not c.text:
+            c.text = row["text"][:280].strip()
+        if not c.line_range or c.line_range == [0, 0]:
+            c.line_range = [row["line_start"], row["line_end"]]
     return citations
 
 
@@ -253,8 +268,19 @@ Rules:
    a human should check, instead of inventing an answer.
 2. Cite each source you use by its exact doc_id and line range; rely on the highest-relevance
    sources when they overlap or disagree.
-3. Be concise and engineering-accurate: give the concrete command, path, config value, or step
-   that answers the question — not a summary of the docs. Put commands and paths in backticks.
+3. Be thorough, comprehensive, and engineering-accurate. Write a complete, well-structured
+   answer, not a one-liner:
+   - Open with a one- or two-sentence direct answer (the exact command, path, config value, or
+     bottom line).
+   - Then expand: explain the key steps in order, the prerequisites, important options/flags,
+     how it works, and the caveats, gotchas, or version/platform notes the SOURCES mention.
+   - Use Markdown for readability: short ordered steps or bullet lists for multi-part answers,
+     `##`/`###` sub-headings when the answer has distinct sections, and fenced code blocks for
+     commands or config; put inline commands, paths, and config keys in backticks.
+   - Include a concrete example or command sequence whenever the SOURCES contain one.
+   - Synthesise across multiple SOURCES when they each cover part of the answer.
+   Aim for a genuinely helpful, self-contained explanation (several paragraphs / a full step
+   list when the topic warrants it) — but never pad with anything the SOURCES do not support.
 4. Set confidence in [0,1] to how directly the SOURCES support the answer: ~0.9 when a source
    states it outright, ~0.6 when you infer it, <0.5 when the evidence is thin.
 5. In `reasoning`, give a brief trace (1-3 short sentences) of HOW you derived the answer from

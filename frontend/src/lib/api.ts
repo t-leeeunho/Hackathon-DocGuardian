@@ -12,12 +12,17 @@
  */
 import type {
   AgentProposal,
+  AnalysisReport,
   ChatAnswer,
+  DocAnalysis,
   DocumentIntakeResponse,
   DocumentResponse,
+  DocumentSource,
   GraphDTO,
   GraphEdge,
+  IngestJob,
   TreeNode,
+  TrendsDTO,
 } from './types';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -101,7 +106,7 @@ export const api = {
   async getTree(namespace?: string): Promise<TreeNode[]> {
     const qs = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
     const raw = await request<
-      Array<{ name: string; type: string; path: string; children?: unknown[] }>
+      Array<{ name: string; type: string; path: string; summary?: string; children?: unknown[] }>
     >(`/tree${qs}`);
     return normalizeTree(raw);
   },
@@ -110,11 +115,41 @@ export const api = {
     return request<DocumentResponse>(`/documents/${encodeURIComponent(docId)}`);
   },
 
+  /** The original drop-off + the AI rewrite, for the "view original" toggle. */
+  getDocumentSource(docId: string): Promise<DocumentSource> {
+    return request<DocumentSource>(`/original/${encodeURIComponent(docId)}`);
+  },
+
   ingestDocument(content: string, name?: string): Promise<DocumentIntakeResponse> {
     return request<DocumentIntakeResponse>('/documents', {
       method: 'POST',
       body: JSON.stringify({ name: name ?? 'untitled.md', content, namespace: 'user' }),
     });
+  },
+
+  /** Submit a document for background ingestion. Resolves immediately with a job. */
+  ingestDocumentAsync(content: string, name?: string): Promise<IngestJob> {
+    return request<IngestJob>('/documents?background=true', {
+      method: 'POST',
+      body: JSON.stringify({ name: name ?? 'untitled.md', content, namespace: 'user' }),
+    });
+  },
+
+  getJob(jobId: string): Promise<IngestJob> {
+    return request<IngestJob>(`/jobs/${encodeURIComponent(jobId)}`);
+  },
+
+  /** Crawl a website URL (+ sub-pages) and import them. Resolves with a job to poll. */
+  ingestUrl(url: string, maxPages = 8, maxDepth = 2, namespace?: string): Promise<IngestJob> {
+    return request<IngestJob>('/ingest/url', {
+      method: 'POST',
+      body: JSON.stringify({ url, maxPages, maxDepth, namespace }),
+    });
+  },
+
+  /** ws:// URL for the live event stream (README §8B WS /stream). */
+  streamUrl(): string {
+    return API_BASE.replace(/^http/, 'ws') + '/stream';
   },
 
   async chat(query: string, repo?: string): Promise<ChatAnswer> {
@@ -135,18 +170,52 @@ export const api = {
     if (!proposal.targetDocId) proposal.targetDocId = targetDocId;
     return proposal;
   },
+
+  // ------------------------------------------------------------------------- //
+  // Analysis / Insights (README §8B). These endpoints already emit camelCase
+  // DTOs (like /graph & /documents), so no snake_case conversion is needed.
+  // Like the other methods, they just surface `ApiError`; callers fall back to
+  // the demo fixtures (fixtureAnalysisReport / fixtureDocAnalysis / fixtureTrends).
+  // ------------------------------------------------------------------------- //
+  /** Corpus-wide analysis report: aggregates + worst-offender lists (GET /analysis). */
+  getAnalysis(repo?: string): Promise<AnalysisReport> {
+    const qs = repo ? `?repo=${encodeURIComponent(repo)}` : '';
+    return request<AnalysisReport>(`/analysis${qs}`);
+  },
+
+  /**
+   * Per-doc analysis: quality + links + drift + centrality (GET /analysis/{docId}).
+   * Pass `{ llm: true }` to additionally request the opt-in LLM notes.
+   */
+  getDocAnalysis(docId: string, opts?: { llm?: boolean }): Promise<DocAnalysis> {
+    const qs = opts?.llm ? '?llm=true' : '';
+    return request<DocAnalysis>(`/analysis/${encodeURIComponent(docId)}${qs}`);
+  },
+
+  /** Corpus governance/insights trends: time-series, acceptance rate, distributions (GET /analysis/trends). */
+  getTrends(repo?: string): Promise<TrendsDTO> {
+    const qs = repo ? `?repo=${encodeURIComponent(repo)}` : '';
+    return request<TrendsDTO>(`/analysis/trends${qs}`);
+  },
 };
 
 function normalizeTree(
-  nodes: Array<{ name: string; type: string; path: string; children?: unknown[] }>,
+  nodes: Array<{ name: string; type: string; path: string; summary?: string; children?: unknown[] }>,
 ): TreeNode[] {
   return nodes.map((n) => ({
     name: n.name,
     type: n.type === 'file' ? 'file' : 'directory',
     path: n.path,
+    summary: n.summary,
     children: n.children
       ? normalizeTree(
-          n.children as Array<{ name: string; type: string; path: string; children?: unknown[] }>,
+          n.children as Array<{
+            name: string;
+            type: string;
+            path: string;
+            summary?: string;
+            children?: unknown[];
+          }>,
         )
       : undefined,
   }));

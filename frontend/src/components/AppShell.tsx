@@ -1,21 +1,38 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { FileTree } from './sidebar/FileTree';
 import { DocGraph } from './graph/DocGraph';
 import { ChatPanel } from './chat/ChatPanel';
-import { ProvenancePanel } from './panels/ProvenancePanel';
+import { DocumentViewer } from './panels/DocumentViewer';
 import { ProposalPanel } from './panels/ProposalPanel';
 import { MetricsPanel } from './panels/MetricsPanel';
+import { TrendsPanel } from './panels/TrendsPanel';
+import { AnalysisPanel } from './panels/AnalysisPanel';
 import { DropOffArea } from './intake/DropOffArea';
+import { ResizeHandle } from './ResizeHandle';
 import { useGraph } from '../hooks/useGraph';
 import { useHighlight } from '../hooks/useHighlight';
+import { useStream } from '../hooks/useStream';
+import { usePanelWidth } from '../hooks/usePanelWidth';
+import { useDemo } from '../hooks/useDemo';
+import { useTour } from '../hooks/useTour';
+import { DemoControlBar } from './demo/DemoControlBar';
+import { DemoCaption } from './demo/DemoCaption';
+import { DemoSlide } from './demo/DemoSlide';
+import { DemoSpotlight } from './demo/DemoSpotlight';
+import { WelcomeTour } from './tour/WelcomeTour';
 import { api, ApiError } from '../lib/api';
 import { fixtureProposal } from '../lib/fixtures';
-import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent } from '../lib/types';
-import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X } from 'lucide-react';
+import { pickProblemTarget } from '../lib/demoScript';
+import type { DocumentResponse, AgentProposal, Citation, GraphHighlightEvent, StreamEvent } from '../lib/types';
+import { Activity, RefreshCw, Wifi, WifiOff, Wand2, PanelRight, X, BarChart3, Play, CheckCircle2, HelpCircle } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 export function AppShell() {
   const { data: graphData, loading: graphLoading, offline, refresh: refreshGraph } = useGraph();
   const { highlight, emit: emitHighlight, clear: clearHighlight } = useHighlight();
+  const demo = useDemo();
+  const tour = useTour();
 
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentResponse | null>(null);
@@ -24,9 +41,22 @@ export function AppShell() {
   const [showProposal, setShowProposal] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [citedDocIds, setCitedDocIds] = useState<string[]>([]);
+  const [resizing, setResizing] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
+  const [insightsTab, setInsightsTab] = useState<'corpus' | 'doc'>('corpus');
+  const [approved, setApproved] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Drag-resizable, persisted panel widths (compact defaults).
+  const sidebar = usePanelWidth('sidebar', 220, 150, 480);
+  const docPanel = usePanelWidth('doc', 380, 300, 680);
+  const chat = usePanelWidth('chat', 300, 240, 600);
 
   const handleNodeClick = useCallback(async (docId: string) => {
     setSelectedDocId(docId);
+    // Selecting a node also focuses the per-doc Insights tab (if the drawer is open).
+    setInsightsTab('doc');
     try {
       const doc = await api.getDocument(docId);
       setSelectedDoc(doc);
@@ -47,14 +77,9 @@ export function AppShell() {
     setProposalLoading(true);
     setShowProposal(true);
     setProposal(null);
-    // docId is "<repoShortName>/<path>" — scope retrieval to that repo and name the
-    // doc so the Curator/Guardian proposal is about THIS document, not the whole corpus.
-    const repo = docId.includes('/') ? docId.split('/')[0] : undefined;
-    const instruction =
-      `Review "${docId}" for staleness, duplication, and conflicts with related ` +
-      `documentation, and propose a single concrete fix.`;
+    setApproved(false);
     try {
-      const result = await api.propose(docId, instruction, repo);
+      const result = await api.propose(docId, 'Review this document for staleness and conflicts.');
       setProposal(result);
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
@@ -68,14 +93,122 @@ export function AppShell() {
     }
   }, []);
 
+  const handleApprove = useCallback(async () => {
+    setApproved(true);
+    setToast('Change approved — provenance recorded.');
+    window.setTimeout(() => setToast(null), 4200);
+    const id = proposal?.proposalId;
+    if (id) {
+      try {
+        await fetch(`${API_BASE}/proposals/${encodeURIComponent(id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approver: 'demo@docguardian' }),
+        });
+      } catch {
+        /* offline demo — optimistic success is fine */
+      }
+    }
+  }, [proposal]);
+
+  const handleReject = useCallback(() => {
+    setShowProposal(false);
+    setProposal(null);
+    setApproved(false);
+  }, []);
+
   const handleHighlight = useCallback((event: GraphHighlightEvent) => {
     emitHighlight(event);
+    // Persist the chat-referenced docs as a sidebar highlight until cleared or
+    // the next answer (the graph highlight itself auto-clears on its TTL).
+    if (event.reason === 'chat-evidence') {
+      setCitedDocIds(event.nodeIds);
+    }
   }, [emitHighlight]);
 
   const handleIngested = useCallback((docId: string) => {
     refreshGraph();
     handleNodeClick(docId);
   }, [refreshGraph, handleNodeClick]);
+
+  const toggleInsights = useCallback(() => {
+    setShowInsights((v) => {
+      const next = !v;
+      // Open onto the doc tab if something is selected, else the corpus dashboard.
+      if (next) setInsightsTab(selectedDocId ? 'doc' : 'corpus');
+      return next;
+    });
+  }, [selectedDocId]);
+
+  // Register the guided-demo drivers so the auto-pilot can drive real handlers.
+  const { registerDriver } = demo;
+  useEffect(() => {
+    registerDriver({
+      selectDoc: handleNodeClick,
+      highlight: (nodeIds, opts) =>
+        handleHighlight({
+          reason: 'chat-evidence',
+          nodeIds,
+          intensity: opts?.intensity ?? 0.9,
+          ttlMs: 9000,
+          focus: opts?.focus,
+        }),
+      clearHighlight: () => {
+        clearHighlight();
+        setCitedDocIds([]);
+      },
+      openInsights: (tab) => {
+        setShowInsights(true);
+        setInsightsTab(tab);
+      },
+      closeInsights: () => setShowInsights(false),
+      propose: (docId) => {
+        // For the presentation the real /propose round-trip is slow, so show a
+        // representative (fixture) proposal with a short "reviewing" beat — it
+        // looks like the live agent output but is instant and reliable.
+        setShowInsights(false);
+        const target = docId ?? selectedDocId ?? fixtureProposal.targetDocId;
+        setShowProposal(true);
+        setApproved(false);
+        setProposal(null);
+        setProposalLoading(true);
+        window.setTimeout(() => {
+          setProposal({ ...fixtureProposal, targetDocId: target });
+          setProposalLoading(false);
+        }, 650);
+      },
+      approve: () => handleApprove(),
+      resetView: () => {
+        setShowInsights(false);
+        setShowProposal(false);
+        setProposal(null);
+        setProposalLoading(false);
+        setApproved(false);
+        setSelectedDoc(null);
+        setSelectedDocId(null);
+        setChatCollapsed(false);
+        clearHighlight();
+        setCitedDocIds([]);
+      },
+      pickProblemNode: () => pickProblemTarget(graphData),
+    });
+  }, [registerDriver, handleNodeClick, handleHighlight, clearHighlight, handleApprove, selectedDocId, graphData]);
+
+  // Live updates: refresh the graph when the backend reports an ingest finished,
+  // a graph change, or an approved proposal (README §8B WS /stream).
+  useStream(useCallback((event: StreamEvent) => {
+    if (
+      event.type === 'graph' ||
+      event.type === 'metrics' ||
+      (event.type === 'ingest' && event.status === 'ready') ||
+      event.type === 'proposal'
+    ) {
+      refreshGraph();
+    }
+  }, [refreshGraph]));
+
+  const selectedNode =
+    selectedDocId != null ? graphData.nodes.find((n) => n.id === selectedDocId) ?? null : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', background: '#0d0d12', overflow: 'hidden' }}>
@@ -132,10 +265,46 @@ export function AppShell() {
         <div style={{ flex: 1 }} />
 
         {/* Metrics strip */}
-        <MetricsPanel compact />
+        <div data-tour="metrics" style={{ display: 'flex', alignItems: 'center' }}>
+          <MetricsPanel compact />
+        </div>
 
         {/* Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Guided demo */}
+          <button
+            onClick={demo.start}
+            title="Run the guided auto-pilot demo"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: 'linear-gradient(135deg, rgba(34,211,160,0.18), rgba(59,130,246,0.14))',
+              border: '1px solid rgba(34,211,160,0.35)',
+              cursor: 'pointer', color: '#34d399', transition: 'all 0.2s',
+            }}
+          >
+            <Play size={12} /> Demo
+          </button>
+
+          {/* Insights toggle */}
+          <button
+            onClick={toggleInsights}
+            data-tour="insights"
+            title="Toggle Insights dashboard"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+              background: showInsights
+                ? 'linear-gradient(135deg, rgba(139,92,246,0.25), rgba(59,130,246,0.18))'
+                : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${showInsights ? 'rgba(139,92,246,0.4)' : 'rgba(139,92,246,0.15)'}`,
+              cursor: 'pointer', color: showInsights ? '#a78bfa' : '#64748b',
+              transition: 'all 0.2s',
+            }}
+          >
+            <BarChart3 size={13} /> Insights
+          </button>
+
           {/* Propose button for selected doc */}
           {selectedDocId && (
             <button
@@ -154,7 +323,23 @@ export function AppShell() {
           )}
 
           {/* DropOff */}
-          <DropOffArea onIngested={handleIngested} />
+          <span data-tour="intake" style={{ display: 'flex', alignItems: 'center' }}>
+            <DropOffArea onIngested={handleIngested} />
+          </span>
+
+          {/* Help / re-run onboarding */}
+          <button
+            onClick={tour.openWelcome}
+            title="Show the welcome tour"
+            style={{
+              width: 30, height: 30, borderRadius: 7,
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(139,92,246,0.15)',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#64748b', transition: 'all 0.2s',
+            }}
+          >
+            <HelpCircle size={14} />
+          </button>
 
           {/* Refresh */}
           <button
@@ -193,19 +378,19 @@ export function AppShell() {
         <div
           className="glass-panel"
           style={{
-            width: sidebarCollapsed ? 0 : 256,
-            minWidth: sidebarCollapsed ? 0 : 256,
+            width: sidebarCollapsed ? 0 : sidebar.width,
+            minWidth: sidebarCollapsed ? 0 : sidebar.width,
             borderRight: '1px solid rgba(139,92,246,0.15)',
             overflowY: 'auto',
             overflowX: 'hidden',
-            transition: 'width 0.3s ease, min-width 0.3s ease',
+            transition: resizing ? 'none' : 'width 0.3s ease, min-width 0.3s ease',
             flexShrink: 0,
             position: 'relative',
             zIndex: 5,
           }}
         >
           {!sidebarCollapsed && (
-            <FileTree onFileSelect={handleFileSelect} selectedPath={selectedDocId ?? undefined} />
+            <FileTree onFileSelect={handleFileSelect} selectedPath={selectedDocId ?? undefined} highlightedPaths={citedDocIds} />
           )}
 
           {/* Collapse toggle */}
@@ -226,7 +411,7 @@ export function AppShell() {
               alignItems: 'center',
               justifyContent: 'center',
               color: '#64748b',
-              zIndex: 10,
+              zIndex: 30,
               borderLeft: 'none',
             }}
           >
@@ -234,8 +419,18 @@ export function AppShell() {
           </button>
         </div>
 
+        {/* Sidebar resize handle */}
+        {!sidebarCollapsed && (
+          <ResizeHandle
+            onResize={sidebar.resize}
+            onReset={sidebar.reset}
+            onDragStart={() => setResizing(true)}
+            onDragEnd={() => setResizing(false)}
+          />
+        )}
+
         {/* Graph (center) */}
-        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div data-tour="graph" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           <DocGraph
             data={graphData}
             highlight={highlight}
@@ -244,9 +439,9 @@ export function AppShell() {
           />
 
           {/* Click to clear highlights */}
-          {highlight.nodeIds.size > 0 && (
+          {(highlight.nodeIds.size > 0 || citedDocIds.length > 0) && (
             <button
-              onClick={clearHighlight}
+              onClick={() => { clearHighlight(); setCitedDocIds([]); }}
               style={{
                 position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
                 padding: '4px 12px', borderRadius: 20,
@@ -263,12 +458,24 @@ export function AppShell() {
 
         {/* Right panels */}
         <div style={{ display: 'flex', gap: 0, flexShrink: 0, position: 'relative', zIndex: 5 }}>
-          {/* Provenance panel */}
+          {/* Document viewer (AI doc + original/references toggle) */}
           {selectedDoc && (
-            <ProvenancePanel
-              doc={selectedDoc}
-              onClose={() => { setSelectedDoc(null); setSelectedDocId(null); }}
-            />
+            <>
+              <ResizeHandle
+                onResize={(dx) => docPanel.resize(-dx)}
+                onReset={docPanel.reset}
+                onDragStart={() => setResizing(true)}
+                onDragEnd={() => setResizing(false)}
+              />
+              <DocumentViewer
+                doc={selectedDoc}
+                edges={graphData.edges}
+                nodes={graphData.nodes}
+                width={docPanel.width}
+                onClose={() => { setSelectedDoc(null); setSelectedDocId(null); }}
+                onNavigate={handleNodeClick}
+              />
+            </>
           )}
 
           {/* Proposal panel */}
@@ -276,22 +483,160 @@ export function AppShell() {
             <ProposalPanel
               proposal={proposal}
               loading={proposalLoading}
-              onClose={() => { setShowProposal(false); setProposal(null); }}
+              onClose={() => { setShowProposal(false); setProposal(null); setApproved(false); }}
               onHighlight={handleHighlight}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              approved={approved}
             />
+          )}
+
+          {/* Insights drawer (Trends dashboard + per-doc Analysis) */}
+          {showInsights && (
+            <div
+              className="glass-panel-elevated animate-slide-in-right"
+              style={{ width: 440, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+            >
+              {/* Drawer header */}
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderBottom: '1px solid rgba(139,92,246,0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexShrink: 0,
+                }}
+              >
+                <div
+                  style={{
+                    width: 28, height: 28, borderRadius: 8,
+                    background: 'linear-gradient(135deg, #8b5cf6, #3b82f6)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 0 12px rgba(139,92,246,0.4)',
+                  }}
+                >
+                  <BarChart3 size={14} color="white" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>Insights</div>
+                  <div style={{ fontSize: 10, color: '#64748b' }}>Documentation analysis</div>
+                </div>
+                <button
+                  onClick={() => setShowInsights(false)}
+                  title="Close Insights"
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#64748b', padding: 4, borderRadius: 4, display: 'flex' }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div style={{ display: 'flex', gap: 6, padding: '8px 12px', borderBottom: '1px solid rgba(139,92,246,0.1)', flexShrink: 0 }}>
+                <InsightsTabButton active={insightsTab === 'corpus'} onClick={() => setInsightsTab('corpus')}>
+                  Corpus Trends
+                </InsightsTabButton>
+                <InsightsTabButton
+                  active={insightsTab === 'doc'}
+                  disabled={!selectedDocId}
+                  onClick={() => selectedDocId && setInsightsTab('doc')}
+                >
+                  This Document
+                </InsightsTabButton>
+              </div>
+
+              {/* Body */}
+              <div style={{ flex: 1, overflowY: 'auto' }}>
+                {insightsTab === 'corpus' ? (
+                  <TrendsPanel onSelectDoc={handleNodeClick} />
+                ) : selectedDocId ? (
+                  <AnalysisPanel docId={selectedDocId} node={selectedNode} />
+                ) : (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 12, lineHeight: 1.6 }}>
+                    Select a document in the graph to see its analysis.
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Chat panel */}
           {!chatCollapsed && (
-            <div style={{ width: 360, borderLeft: '1px solid rgba(139,92,246,0.15)' }}>
-              <ChatPanel
-                onHighlight={handleHighlight}
-                onCitationClick={handleCitationClick}
+            <>
+              <ResizeHandle
+                onResize={(dx) => chat.resize(-dx)}
+                onReset={chat.reset}
+                onDragStart={() => setResizing(true)}
+                onDragEnd={() => setResizing(false)}
               />
-            </div>
+              <div data-tour="chat" style={{ width: chat.width, borderLeft: '1px solid rgba(139,92,246,0.15)' }}>
+                <ChatPanel
+                  onHighlight={handleHighlight}
+                  onCitationClick={handleCitationClick}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>
+
+      {/* Guided demo overlays (inert unless active) */}
+      <DemoSpotlight />
+      <DemoCaption />
+      <DemoSlide />
+      <DemoControlBar />
+
+      {/* First-run onboarding (inert once dismissed) */}
+      <WelcomeTour />
+
+      {toast && (
+        <div
+          className="animate-fade-in-up"
+          style={{
+            position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)',
+            zIndex: 1002, padding: '10px 18px', borderRadius: 10,
+            background: 'rgba(34,211,160,0.14)', border: '1px solid rgba(34,211,160,0.4)',
+            color: '#34d399', fontSize: 13, fontWeight: 600,
+            boxShadow: '0 8px 30px rgba(0,0,0,0.45)',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}
+        >
+          <CheckCircle2 size={15} /> {toast}
+        </div>
+      )}
     </div>
+  );
+}
+
+function InsightsTabButton({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        flex: 1,
+        padding: '6px 10px',
+        borderRadius: 7,
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        background: active ? 'rgba(139,92,246,0.18)' : 'transparent',
+        border: `1px solid ${active ? 'rgba(139,92,246,0.4)' : 'rgba(139,92,246,0.12)'}`,
+        color: disabled ? '#3f4654' : active ? '#a78bfa' : '#64748b',
+        transition: 'all 0.2s',
+      }}
+    >
+      {children}
+    </button>
   );
 }

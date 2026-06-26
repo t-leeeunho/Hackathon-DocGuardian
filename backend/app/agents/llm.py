@@ -25,6 +25,7 @@ from app.agents.schemas import (
     Citation,
     CuratorDraft,
     GuardianReview,
+    LibrarianPlan,
     ProposalDiff,
 )
 
@@ -65,6 +66,7 @@ def _azure_chat_llm(temperature: float):
         azure_deployment=os.environ["AZURE_OPENAI_CHAT_DEPLOYMENT"],
         api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-06-01"),
         temperature=temperature,
+        max_tokens=int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "1500")),
     )
 
 
@@ -213,6 +215,21 @@ def _fake_guardian_review(_prompt: str) -> GuardianReview:
     )
 
 
+def _fake_librarian_plan(prompt: str) -> LibrarianPlan:
+    """Deterministic Librarian plan for the offline fake.
+
+    Parses the ORIGINAL_NAME/ORIGINAL_CONTENT markers ``rewrite_and_place`` emits
+    and reuses the same deterministic rewrite/placement builder, so offline runs
+    match the documented fallback behavior exactly.
+    """
+    from app.agents.librarian import build_plan_from_text
+
+    name = _section(prompt, "\n\nORIGINAL_NAME:\n", until="\n\nORIGINAL_CONTENT:\n")
+    content = _section(prompt, "\n\nORIGINAL_CONTENT:\n")
+    namespace = _section(prompt, "\n\nNAMESPACE:\n", until="\n\nEXISTING_PATHS:\n") or "user"
+    return build_plan_from_text(name or "untitled.md", content, namespace.strip() or "user")
+
+
 class _FakeStructuredRunnable:
     """Mimics ``llm.with_structured_output(Schema)`` — returns a Schema instance."""
 
@@ -227,6 +244,8 @@ class _FakeStructuredRunnable:
             return _fake_curator_draft(text)
         if self._schema is GuardianReview:
             return _fake_guardian_review(text)
+        if self._schema is LibrarianPlan:
+            return _fake_librarian_plan(text)
         raise TypeError(f"FakeChatLLM has no canned output for schema {self._schema!r}")
 
 

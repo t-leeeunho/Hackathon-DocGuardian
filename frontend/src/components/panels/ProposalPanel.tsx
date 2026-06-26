@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, AlertTriangle, ChevronDown, ChevronRight, Wand2 } from 'lucide-react';
+import { X, AlertTriangle, ChevronDown, ChevronRight, Wand2, CheckCircle2 } from 'lucide-react';
 import MonacoEditor from '@monaco-editor/react';
 import { CitationChip } from '../chat/CitationChip';
 import type { AgentProposal, Citation, GraphHighlightEvent } from '../../lib/types';
@@ -9,6 +9,9 @@ interface ProposalPanelProps {
   loading?: boolean;
   onClose: () => void;
   onHighlight: (event: GraphHighlightEvent) => void;
+  onApprove?: () => void;
+  onReject?: () => void;
+  approved?: boolean;
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -26,7 +29,7 @@ const RISK_CONFIG = {
   high: { color: '#ef4444', bg: 'rgba(239,68,68,0.1)', label: 'High risk' },
 };
 
-export function ProposalPanel({ proposal, loading, onClose, onHighlight }: ProposalPanelProps) {
+export function ProposalPanel({ proposal, loading, onClose, onHighlight, onApprove, onReject, approved }: ProposalPanelProps) {
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
   if (!proposal && !loading) return null;
@@ -298,43 +301,68 @@ export function ProposalPanel({ proposal, loading, onClose, onHighlight }: Propo
             </div>
           )}
 
-          {/* Approve / Reject buttons */}
-          <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
-            <button
-              disabled
-              title="Approval API not implemented — requires backend governance module"
+          {/* Approve / Reject */}
+          {approved ? (
+            <div
               style={{
-                flex: 1,
-                padding: '8px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                padding: '10px 16px',
                 borderRadius: 8,
-                background: 'rgba(34,211,160,0.08)',
-                border: '1px solid rgba(34,211,160,0.2)',
-                color: '#4b5563',
+                background: 'rgba(34,211,160,0.12)',
+                border: '1px solid rgba(34,211,160,0.35)',
+                color: '#22d3a0',
                 fontSize: 13,
-                cursor: 'not-allowed',
-                fontWeight: 600,
+                fontWeight: 700,
               }}
             >
-              ✓ Approve (coming soon)
-            </button>
-            <button
-              disabled
-              title="Approval API not implemented"
-              style={{
-                flex: 1,
-                padding: '8px 16px',
-                borderRadius: 8,
-                background: 'rgba(239,68,68,0.08)',
-                border: '1px solid rgba(239,68,68,0.2)',
-                color: '#4b5563',
-                fontSize: 13,
-                cursor: 'not-allowed',
-                fontWeight: 600,
-              }}
-            >
-              ✗ Reject (coming soon)
-            </button>
-          </div>
+              <CheckCircle2 size={15} /> Approved — change applied &amp; provenance recorded
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
+              <button
+                onClick={onApprove}
+                disabled={!onApprove}
+                title={onApprove ? 'Approve and apply this change' : 'Approval unavailable'}
+                style={{
+                  flex: 1,
+                  padding: '8px 16px',
+                  borderRadius: 8,
+                  background: onApprove
+                    ? 'linear-gradient(135deg, rgba(34,211,160,0.9), rgba(5,150,105,0.9))'
+                    : 'rgba(34,211,160,0.08)',
+                  border: '1px solid rgba(34,211,160,0.4)',
+                  color: onApprove ? 'white' : '#4b5563',
+                  fontSize: 13,
+                  cursor: onApprove ? 'pointer' : 'not-allowed',
+                  fontWeight: 700,
+                  boxShadow: onApprove ? '0 0 14px rgba(34,211,160,0.3)' : 'none',
+                }}
+              >
+                ✓ Approve
+              </button>
+              <button
+                onClick={onReject}
+                disabled={!onReject}
+                title={onReject ? 'Reject this proposal' : 'Reject unavailable'}
+                style={{
+                  flex: 1,
+                  padding: '8px 16px',
+                  borderRadius: 8,
+                  background: 'rgba(239,68,68,0.1)',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  color: onReject ? '#fca5a5' : '#4b5563',
+                  fontSize: 13,
+                  cursor: onReject ? 'pointer' : 'not-allowed',
+                  fontWeight: 600,
+                }}
+              >
+                ✗ Reject
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
     </div>
