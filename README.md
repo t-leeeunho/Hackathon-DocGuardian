@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # DocGuardian AI
 
 ## AI-Powered Documentation Governance, Validation, and Knowledge Navigation Platform
@@ -1540,3 +1541,7 @@ DocGuardian AI turns engineering documentation from a passive knowledge base int
 It continuously checks whether documentation matches reality, detects stale or conflicting information, proposes evidence-backed fixes, and gives engineers a visual way to explore project knowledge. With human approval, provenance tracking, rollback, and permission-aware access control, DocGuardian AI is designed not just as a chatbot, but as an enterprise-ready documentation governance agent.
 
 For engineering teams, this means faster onboarding, fewer duplicated docs, more reliable workflows, and significantly less manual documentation maintenance.
+=======
+# HackathonDocGuardian
+DocGuardian AI is an AI-powered documentation governance platform that turns a team's scattered, drifting docs into an active, trustworthy knowledge base. It ingests real engineering documentation and continuously validates it against source-of-truth signals like commits and pull requests, using two coordinated LLM agents, a Curator that proposes f
+>>>>>>> 8f61d2cc38151c38c452f76bb2ef453f60c4d623
